@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/Use-Tusk/fence/internal/config"
+	"github.com/Use-Tusk/fence/internal/importer"
 	"github.com/Use-Tusk/fence/internal/platform"
 	"github.com/Use-Tusk/fence/internal/sandbox"
 	"github.com/Use-Tusk/fence/internal/templates"
@@ -99,6 +100,8 @@ Configuration file format (~/.fence.json):
 	rootCmd.Flags().BoolVar(&linuxFeatures, "linux-features", false, "Show available Linux security features and exit")
 
 	rootCmd.Flags().SetInterspersed(true)
+
+	rootCmd.AddCommand(newImportCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -291,6 +294,101 @@ func runCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// newImportCmd creates the import subcommand.
+func newImportCmd() *cobra.Command {
+	var (
+		claudeMode bool
+		inputFile  string
+		outputFile string
+		extendTmpl string
+		noExtend   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import settings from other tools",
+		Long: `Import permission settings from other tools and convert them to fence config.
+
+Currently supported sources:
+  --claude    Import from Claude Code settings
+
+By default, imports extend the "code" template which provides sensible defaults
+for network access (npm, GitHub, LLM providers) and filesystem protections.
+Use --no-extend for a minimal config, or --extend to choose a different template.
+
+Examples:
+  # Import from default Claude Code settings (~/.claude/settings.json)
+  fence import --claude
+
+  # Import from a specific Claude Code settings file
+  fence import --claude -f ~/.claude/settings.json
+
+  # Import and write to a specific output file
+  fence import --claude -o .fence.json
+
+  # Import without extending any template (minimal config)
+  fence import --claude --no-extend
+
+  # Import and extend a different template
+  fence import --claude --extend local-dev-server
+
+  # Import from project-level Claude settings
+  fence import --claude -f .claude/settings.local.json -o .fence.json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !claudeMode {
+				return fmt.Errorf("no import source specified. Use --claude to import from Claude Code")
+			}
+
+			opts := importer.DefaultImportOptions()
+			if noExtend {
+				opts.Extends = ""
+			} else if extendTmpl != "" {
+				opts.Extends = extendTmpl
+			}
+
+			result, err := importer.ImportFromClaude(inputFile, opts)
+			if err != nil {
+				return fmt.Errorf("failed to import Claude settings: %w", err)
+			}
+
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+			}
+
+			if outputFile != "" {
+				if err := importer.WriteConfig(result.Config, outputFile); err != nil {
+					return err
+				}
+				fmt.Printf("Imported %d rules from %s\n", result.RulesImported, result.SourcePath)
+				fmt.Printf("Written to %s\n", outputFile)
+			} else {
+				// Print clean JSON to stdout, helpful info to stderr (don't interfere with piping)
+				data, err := importer.MarshalConfigJSON(result.Config)
+				if err != nil {
+					return fmt.Errorf("failed to marshal config: %w", err)
+				}
+				fmt.Println(string(data))
+				if result.Config.Extends != "" {
+					fmt.Fprintf(os.Stderr, "\n# Extends %q - inherited rules not shown\n", result.Config.Extends)
+				}
+				fmt.Fprintf(os.Stderr, "# Imported %d rules from %s\n", result.RulesImported, result.SourcePath)
+				fmt.Fprintf(os.Stderr, "# Use -o <file> to write to a file (includes comments)\n")
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&claudeMode, "claude", false, "Import from Claude Code settings")
+	cmd.Flags().StringVarP(&inputFile, "file", "f", "", "Path to settings file (default: ~/.claude/settings.json for --claude)")
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (default: stdout)")
+	cmd.Flags().StringVar(&extendTmpl, "extend", "", "Template to extend (default: code)")
+	cmd.Flags().BoolVar(&noExtend, "no-extend", false, "Don't extend any template (minimal config)")
+	cmd.MarkFlagsMutuallyExclusive("extend", "no-extend")
+
+	return cmd
 }
 
 // printTemplates prints all available templates to stdout.

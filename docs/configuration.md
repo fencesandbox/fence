@@ -164,6 +164,54 @@ Fence detects blocked commands in:
 |-------|-------------|
 | `allowPty` | Allow pseudo-terminal (PTY) allocation in the sandbox (for MacOS) |
 
+## Importing from Claude Code
+
+If you've been using Claude Code and have already built up permission rules, you can import them into fence:
+
+```bash
+# Import from default Claude Code settings (~/.claude/settings.json)
+fence import --claude
+
+# Import from a specific file
+fence import --claude -f ~/.claude/settings.json
+
+# Import and write to a specific output file
+fence import --claude -o .fence.json
+
+# Import without extending any template (minimal config)
+fence import --claude --no-extend
+
+# Import and extend a different template
+fence import --claude --extend local-dev-server
+
+# Import from project-level Claude settings
+fence import --claude -f .claude/settings.local.json -o .fence.json
+```
+
+### Default Template
+
+By default, imports extend the `code` template which provides sensible defaults:
+
+- Network access for npm, GitHub, LLM providers, etc.
+- Filesystem protections for secrets and sensitive paths
+- Command restrictions for dangerous operations
+
+Use `--no-extend` if you want a minimal config without these defaults, or `--extend <template>` to choose a different base template.
+
+### Permission Mapping
+
+| Claude Code | Fence |
+|-------------|-------|
+| `Bash(xyz)` allow | `command.allow: ["xyz"]` |
+| `Bash(xyz:*)` deny | `command.deny: ["xyz"]` |
+| `Read(path)` deny | `filesystem.denyRead: [path]` |
+| `Write(path)` allow | `filesystem.allowWrite: [path]` |
+| `Write(path)` deny | `filesystem.denyWrite: [path]` |
+| `Edit(path)` | Same as `Write(path)` |
+| `ask` rules | Converted to deny (fence doesn't support interactive prompts) |
+
+Global tool permissions (e.g., bare `Read`, `Write`, `Grep`) are skipped since fence uses path/command-based rules.
+
 ## See Also
 
 - Config templates: [`docs/templates/`](docs/templates/)

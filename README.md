@@ -15,6 +15,7 @@ Fence wraps commands in a sandbox that blocks network access by default and rest
 - **Violation Monitoring**: Real-time logging of blocked requests and sandbox denials
 - **Cross-Platform**: macOS (sandbox-exec) and Linux (bubblewrap)
 - **HTTP/SOCKS5 Proxies**: Built-in filtering proxies for domain control
+- **Permission Import**: Using Claude Code? Import your Claude permissions as Fence configs with `fence import --claude -o ~/.fence.json`
 
 You can use Fence as a Go package or CLI tool.
 
@@ -96,6 +97,9 @@ Flags:
   -t, --template   Use built-in template (e.g., code, local-dev-server)
   -v, --version    Show version information
   -h, --help       Help for fence
+
+Subcommands:
+  import           Import settings from other tools (e.g., --claude for Claude Code)
 ```
 
 ### Examples
@@ -131,6 +135,9 @@ fence -m npm install
 
 # Expose a port for inbound connections
 fence -p 3000 -c "npm run dev"
+
+# Import settings from Claude Code
+fence import --claude -o .fence.json
 ```
 
 ## Library Usage
