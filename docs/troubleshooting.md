@@ -1,5 +1,19 @@
 # Troubleshooting
 
+## Nested Sandboxing Not Supported
+
+Fence cannot run inside another sandbox that uses the same underlying technology.
+
+**macOS (Seatbelt)**: If you try to run fence inside an existing `sandbox-exec` sandbox (e.g., Nix's Darwin build sandbox), you'll see:
+
+```text
+Sandbox: sandbox-exec(...) deny(1) forbidden-sandbox-reinit
+```
+
+This is a macOS kernel limitation - nested Seatbelt sandboxes are not allowed. There is no workaround.
+
+**Linux (Landlock)**: Landlock supports stacking (nested restrictions), but fence's test binaries cannot use the Landlock wrapper (see [Testing docs](testing.md#sandboxed-build-environments-nix-etc)).
+
 ## "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" (Linux)
 
 This error occurs when fence tries to create a network namespace but the environment lacks the `CAP_NET_ADMIN` capability. This is common in:

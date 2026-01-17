@@ -16,8 +16,11 @@ import (
 // ============================================================================
 
 // skipIfLandlockNotUsable skips tests that require the Landlock wrapper.
-// The Landlock wrapper is disabled when the executable is in /tmp (test binaries),
-// because --tmpfs /tmp hides the test binary from inside the sandbox.
+// The Landlock wrapper re-executes the binary with --landlock-apply, which only
+// the fence CLI understands. Test binaries (e.g., sandbox.test) don't have this
+// handler, so Landlock tests must be skipped when not running as the fence CLI.
+// TODO: consider removing tests that call this function, for now can keep them
+// as documentation.
 func skipIfLandlockNotUsable(t *testing.T) {
 	t.Helper()
 	features := DetectLinuxFeatures()
@@ -25,8 +28,8 @@ func skipIfLandlockNotUsable(t *testing.T) {
 		t.Skip("skipping: Landlock not available on this kernel")
 	}
 	exePath, _ := os.Executable()
-	if strings.HasPrefix(exePath, "/tmp/") {
-		t.Skip("skipping: Landlock wrapper disabled in test environment (executable in /tmp)")
+	if !strings.Contains(filepath.Base(exePath), "fence") {
+		t.Skip("skipping: Landlock wrapper requires fence CLI (test binary cannot use --landlock-apply)")
 	}
 }
 
