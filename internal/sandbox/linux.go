@@ -211,6 +211,34 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// isDirectory returns true if the path exists and is a directory.
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// isSymlink returns true if the path is a symbolic link.
+func isSymlink(path string) bool {
+	info, err := os.Lstat(path) // Lstat doesn't follow symlinks
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0
+}
+
+// canMountOver returns true if bwrap can safely mount over this path.
+// Returns false for symlinks (target may not exist in sandbox) and
+// other special cases that could cause mount failures.
+func canMountOver(path string) bool {
+	if isSymlink(path) {
+		return false
+	}
+	return fileExists(path)
+}
+
 // getMandatoryDenyPaths returns concrete paths (not globs) that must be protected.
 // This expands the glob patterns from GetMandatoryDenyPatterns into real paths.
 func getMandatoryDenyPaths(cwd string) []string {
@@ -373,20 +401,32 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 		}
 	}
 
-	// Handle denyRead paths - hide them with tmpfs
+	// Handle denyRead paths - hide them
+	// For directories: use --tmpfs to replace with empty tmpfs
+	// For files: use --ro-bind /dev/null to mask with empty file
+	// Skip symlinks: they may point outside the sandbox and cause mount errors
 	if cfg != nil && cfg.Filesystem.DenyRead != nil {
 		expandedDenyRead := ExpandGlobPatterns(cfg.Filesystem.DenyRead)
 		for _, p := range expandedDenyRead {
-			if fileExists(p) {
-				bwrapArgs = append(bwrapArgs, "--tmpfs", p)
+			if canMountOver(p) {
+				if isDirectory(p) {
+					bwrapArgs = append(bwrapArgs, "--tmpfs", p)
+				} else {
+					// Mask file with /dev/null (appears as empty, unreadable)
+					bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", p)
+				}
 			}
 		}
 
 		// Add non-glob paths
 		for _, p := range cfg.Filesystem.DenyRead {
 			normalized := NormalizePath(p)
-			if !ContainsGlobChars(normalized) && fileExists(normalized) {
-				bwrapArgs = append(bwrapArgs, "--tmpfs", normalized)
+			if !ContainsGlobChars(normalized) && canMountOver(normalized) {
+				if isDirectory(normalized) {
+					bwrapArgs = append(bwrapArgs, "--tmpfs", normalized)
+				} else {
+					bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", normalized)
+				}
 			}
 		}
 	}
