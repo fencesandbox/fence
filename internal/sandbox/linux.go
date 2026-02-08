@@ -411,6 +411,20 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 	// /tmp needs to be writable for many programs
 	bwrapArgs = append(bwrapArgs, "--tmpfs", "/tmp")
 
+	// Ensure /etc/resolv.conf is readable inside the sandbox.
+	// On some systems (e.g., WSL), /etc/resolv.conf is a symlink to a path
+	// on a separate mount point (e.g., /mnt/wsl/resolv.conf) that isn't
+	// reachable after --ro-bind / / (non-recursive bind). We resolve the
+	// symlink and bind the real file directly so DNS resolution works.
+	if target, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && target != "/etc/resolv.conf" {
+		if fileExists(target) {
+			bwrapArgs = append(bwrapArgs, "--ro-bind", target, "/etc/resolv.conf")
+			if opts.Debug {
+				fmt.Fprintf(os.Stderr, "[fence:linux] Resolved /etc/resolv.conf symlink -> %s\n", target)
+			}
+		}
+	}
+
 	writablePaths := make(map[string]bool)
 
 	// Add default write paths (system paths needed for operation)
