@@ -119,6 +119,7 @@ func ensureSandboxTMPDIR() string {
 		if !info.IsDir() {
 			return sandboxTMPDIRFallback
 		}
+		//nolint:gosec // G302 targets files; TMPDIR is a directory and needs execute bit (0700) to be usable.
 		_ = os.Chmod(sandboxTMPDIR, 0o700)
 		return sandboxTMPDIR
 	}
@@ -126,6 +127,7 @@ func ensureSandboxTMPDIR() string {
 	if err := os.MkdirAll(sandboxTMPDIR, 0o700); err != nil {
 		return sandboxTMPDIRFallback
 	}
+	//nolint:gosec // G302 targets files; TMPDIR is a directory and needs execute bit (0700) to be usable.
 	_ = os.Chmod(sandboxTMPDIR, 0o700)
 	return sandboxTMPDIR
 }
