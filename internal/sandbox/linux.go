@@ -345,6 +345,17 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 		return "", err
 	}
 
+	deniedExecPaths := GetRuntimeDeniedExecutablePaths(cfg)
+	if resolvedShellPath, err := filepath.EvalSymlinks(shellPath); err == nil {
+		deniedExecPaths = slices.DeleteFunc(deniedExecPaths, func(p string) bool {
+			return p == shellPath || p == resolvedShellPath
+		})
+	} else {
+		deniedExecPaths = slices.DeleteFunc(deniedExecPaths, func(p string) bool {
+			return p == shellPath
+		})
+	}
+
 	cwd, _ := os.Getwd()
 	features := DetectLinuxFeatures()
 
@@ -741,6 +752,16 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 				seen[normalized] = true
 				bwrapArgs = append(bwrapArgs, "--ro-bind", normalized, normalized)
 			}
+		}
+	}
+
+	// Runtime executable deny (applies to child processes).
+	// This masks resolved executable paths so execve fails even when launched
+	// from an allowed wrapper process (e.g., agent subprocesses).
+	for _, p := range deniedExecPaths {
+		if fileExists(p) && !seen[p] {
+			seen[p] = true
+			bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", p)
 		}
 	}
 

@@ -211,6 +211,18 @@ Fence detects blocked commands in:
 - Pipelines: `echo test | git push`
 - Shell invocations: `bash -c "git push"` or `sh -lc "ls && git push"`
 
+Fence also enforces runtime executable deny for child processes:
+
+- Single-token deny entries (for example, `python3`, `node`, `ruby`) are resolved to executable paths and blocked at exec-time.
+- This applies even when the executable is launched by an allowed parent process (for example, `claude`, `codex`, `opencode`, or `env`).
+
+Current runtime-exec limitations:
+
+- Multi-token rules (for example, `git push`, `dd if=`, `docker run --privileged`) are still preflight-only for child processes.
+- Why: runtime enforcement operates at `execve` and is path-based (`/usr/bin/git`), not shell-intent-based (`git push`), so treating multi-token rules as runtime denies would overblock safe uses (for example, `git status`).
+- Aliases are enforced only when they resolve to a denied executable path; for reliable blocking, deny the real executable name/path (for example, `python3`), not only an alias name.
+- Runtime enforcement is path-based, so renamed/copied binaries at new paths may bypass unless those paths are also denied.
+
 ## SSH Configuration
 
 Control which SSH commands are allowed. By default, SSH uses **allowlist mode** for security - only explicitly allowed hosts and commands can be used.

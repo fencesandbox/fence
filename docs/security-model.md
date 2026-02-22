@@ -52,6 +52,15 @@ Fence strips dangerous environment variables before passing them to sandboxed co
 
 This prevents a library injection attack where a sandboxed process writes a malicious `.so`/`.dylib` and then uses `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` in a subsequent command to load it.
 
+### Command policy boundary
+
+Fence enforces command policy in two layers:
+
+- Preflight command parsing supports intent-style rules (for example, `git push`).
+- Runtime child-process enforcement is `execve` path-based, so it reliably blocks executable-level denies (for example, `python3`) even when launched by allowed wrappers/agents.
+
+Because runtime checks are path-based, multi-token intent rules are not fully enforceable at runtime without overblocking broader executable usage. See `/configuration#command-detection` for exact behavior and limitations.
+
 ## Visibility / auditing
 
 - `-m/--monitor` helps you discover what a command *tries* to access (blocked only).

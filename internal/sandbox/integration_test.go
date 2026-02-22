@@ -410,6 +410,25 @@ func TestIntegration_NestedShellCommandDeny(t *testing.T) {
 	assertBlocked(t, result)
 }
 
+func TestIntegration_RuntimeExecDenyBlocksChildProcess(t *testing.T) {
+	skipIfAlreadySandboxed(t)
+	skipIfCommandNotFound(t, "python3")
+
+	workspace := createTempWorkspace(t)
+	cfg := testConfigWithWorkspace(workspace)
+	cfg.Command.Deny = []string{"python3"}
+
+	// "env python3 ..." should pass preflight command parsing (top-level command is env),
+	// but runtime exec deny should block the child python3 exec.
+	result := runUnderSandbox(t, cfg, "env python3 --version", workspace)
+	assertBlocked(t, result)
+
+	// Ensure this was blocked at runtime rather than preflight command parsing.
+	if strings.Contains(result.Stderr, "blocked by sandbox command policy") {
+		t.Errorf("expected runtime exec deny for child process, got preflight policy block: %s", result.Stderr)
+	}
+}
+
 // ============================================================================
 // Compatibility Tests
 // ============================================================================

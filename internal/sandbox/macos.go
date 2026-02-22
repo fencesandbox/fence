@@ -39,6 +39,7 @@ type MacOSSandboxParams struct {
 	ReadDenyPaths           []string
 	WriteAllowPaths         []string
 	WriteDenyPaths          []string
+	DeniedExecPaths         []string
 	AllowPty                bool
 	AllowGitConfig          bool
 }
@@ -491,6 +492,16 @@ func GenerateSandboxProfile(params MacOSSandboxParams) string {
 
 `)
 
+	if len(params.DeniedExecPaths) > 0 {
+		profile.WriteString("; Runtime executable deny (applies to child processes)\n")
+		for _, execPath := range params.DeniedExecPaths {
+			profile.WriteString("(deny process-exec\n")
+			profile.WriteString(fmt.Sprintf("  (literal %s)\n", escapePath(execPath)))
+			profile.WriteString(fmt.Sprintf("  (with message %q))\n", logTag))
+		}
+		profile.WriteString("\n")
+	}
+
 	// Network rules
 	profile.WriteString("; Network\n")
 	if !params.NeedsNetworkRestriction {
@@ -598,6 +609,22 @@ func WrapCommandMacOS(cfg *config.Config, command string, httpPort, socksPort in
 		fmt.Fprintf(os.Stderr, "[fence:macos] Note: deniedDomains only enforced for apps that respect HTTP_PROXY\n")
 	}
 
+	shellPath, shellFlag, err := ResolveExecutionShell(shellMode, shellLogin)
+	if err != nil {
+		return "", err
+	}
+
+	deniedExecPaths := GetRuntimeDeniedExecutablePaths(cfg)
+	if resolvedShellPath, err := filepath.EvalSymlinks(shellPath); err == nil {
+		deniedExecPaths = slices.DeleteFunc(deniedExecPaths, func(p string) bool {
+			return p == shellPath || p == resolvedShellPath
+		})
+	} else {
+		deniedExecPaths = slices.DeleteFunc(deniedExecPaths, func(p string) bool {
+			return p == shellPath
+		})
+	}
+
 	params := MacOSSandboxParams{
 		Command:                 command,
 		NeedsNetworkRestriction: needsNetworkRestriction,
@@ -612,6 +639,7 @@ func WrapCommandMacOS(cfg *config.Config, command string, httpPort, socksPort in
 		ReadDenyPaths:           cfg.Filesystem.DenyRead,
 		WriteAllowPaths:         allowPaths,
 		WriteDenyPaths:          cfg.Filesystem.DenyWrite,
+		DeniedExecPaths:         deniedExecPaths,
 		AllowPty:                cfg.AllowPty,
 		AllowGitConfig:          cfg.Filesystem.AllowGitConfig,
 	}
@@ -624,11 +652,6 @@ func WrapCommandMacOS(cfg *config.Config, command string, httpPort, socksPort in
 	}
 
 	profile := GenerateSandboxProfile(params)
-
-	shellPath, shellFlag, err := ResolveExecutionShell(shellMode, shellLogin)
-	if err != nil {
-		return "", err
-	}
 
 	proxyEnvs := GenerateProxyEnvVars(httpPort, socksPort)
 
