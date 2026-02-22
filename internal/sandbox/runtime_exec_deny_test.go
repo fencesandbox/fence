@@ -52,4 +52,3 @@ func TestGetRuntimeDeniedExecutablePaths_SingleTokenOnly(t *testing.T) {
 		}
 	}
 }
-
