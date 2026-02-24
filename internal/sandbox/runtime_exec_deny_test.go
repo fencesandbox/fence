@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Use-Tusk/fence/internal/config"
@@ -49,6 +51,26 @@ func TestGetRuntimeDeniedExecutablePaths_SingleTokenOnly(t *testing.T) {
 		base := filepath.Base(p)
 		if slices.Contains([]string{"git", "dd", "bash"}, base) {
 			t.Fatalf("unexpected direct binary path in results: %s", p)
+		}
+	}
+}
+
+func TestResolveExecutablePaths_CanonicalizesSymlinkAliases(t *testing.T) {
+	info, err := os.Lstat("/bin")
+	if err != nil {
+		t.Skip("/bin not present")
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Skip("/bin is not a symlink on this system")
+	}
+
+	paths := resolveExecutablePaths("true")
+	if len(paths) == 0 {
+		t.Skip("true not available on this system")
+	}
+	for _, p := range paths {
+		if strings.HasPrefix(p, "/bin/") {
+			t.Fatalf("expected canonical (non-/bin) path, got: %s", p)
 		}
 	}
 }
