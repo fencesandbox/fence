@@ -739,7 +739,7 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 		if !ok || denyReadPaths[mountPath] {
 			continue
 		}
-		if !seen[mountPath] && canMountOver(mountPath) {
+		if !seen[mountPath] {
 			seen[mountPath] = true
 			seen[p] = true
 			if defaultDenyRead {
