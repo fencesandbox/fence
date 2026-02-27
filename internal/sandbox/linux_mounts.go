@@ -30,7 +30,7 @@ func getExtraReadableMountPaths(cfg *config.Config, debug bool) []string {
 	}
 
 	candidates := append([]string(nil), roots...)
-	mountPoints, err := readMountInfoMountPoints(mountInfoPath)
+	mountPoints, err := readMountInfoMountPoints()
 	if err != nil {
 		if debug {
 			fmt.Fprintf(os.Stderr, "[fence:linux] Failed reading %s for extraReadableMounts (%v), using roots only\n", mountInfoPath, err)
@@ -82,8 +82,8 @@ func normalizeExtraReadableMountRoots(paths []string) []string {
 	return out
 }
 
-func readMountInfoMountPoints(path string) ([]string, error) {
-	f, err := os.Open(path)
+func readMountInfoMountPoints() ([]string, error) {
+	f, err := os.Open(mountInfoPath)
 	if err != nil {
 		return nil, err
 	}
