@@ -20,7 +20,7 @@ brew upgrade use-tusk/tap/fence
 ```sh
 nix run nixpkgs#fence -- --help
 ```
-This runs it directly from the repository, without installing `fence`. Great way to try it out without leaving anything behind. If you want to install it, follow the guidelines [from NixOS](https://nix.dev) or [nix-darwin](https://github.com/nix-darwin/nix-darwin).
+This runs it directly from the repository, without installing `fence`. If you want to install it, follow the guidelines [from NixOS](https://nix.dev) or [nix-darwin](https://github.com/nix-darwin/nix-darwin).
 
 ### From Source
 
