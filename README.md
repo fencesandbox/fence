@@ -36,7 +36,7 @@ brew tap use-tusk/tap
 brew install use-tusk/tap/fence
 ```
 
-**nNIX (macOS,Linux,Windows(WSL)**
+**NIX (macOS, Linux, Windows(WSL))**
 
 ```sh
 nix run nixpkgs#fence -- --help
