@@ -2,9 +2,12 @@
 package fence
 
 import (
+	"path/filepath"
+
 	"github.com/Use-Tusk/fence/internal/config"
 	"github.com/Use-Tusk/fence/internal/platform"
 	"github.com/Use-Tusk/fence/internal/sandbox"
+	"github.com/Use-Tusk/fence/internal/templates"
 )
 
 // IsSupported returns true if the current platform supports sandboxing (macOS/Linux).
@@ -39,6 +42,21 @@ func DefaultConfig() *Config {
 // LoadConfig loads configuration from a file.
 func LoadConfig(path string) (*Config, error) {
 	return config.Load(path)
+}
+
+// LoadConfigResolved loads configuration from a file and resolves any extends
+// entries relative to that file's parent directory.
+func LoadConfigResolved(path string) (*Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil || cfg == nil {
+		return cfg, err
+	}
+	return templates.ResolveExtendsWithBaseDir(cfg, filepath.Dir(path))
+}
+
+// MergeConfigs combines a base config with an override config.
+func MergeConfigs(base, override *Config) *Config {
+	return config.Merge(base, override)
 }
 
 // DefaultConfigPath returns the default config file path.
