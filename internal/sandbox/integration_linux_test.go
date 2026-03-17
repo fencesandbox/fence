@@ -3,10 +3,15 @@
 package sandbox
 
 import (
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -459,6 +464,91 @@ func TestLinux_NetworkBlocksDevTcp(t *testing.T) {
 	result := runUnderSandboxWithTimeout(t, cfg, "bash -c 'echo hi > /dev/tcp/127.0.0.1/80'", workspace, 10*time.Second)
 
 	assertBlocked(t, result)
+}
+
+// TestLinux_ExposedPortAllowsHostReachability verifies the library-based Linux
+// sandbox path can expose a localhost service back to the host.
+func TestLinux_ExposedPortAllowsHostReachability(t *testing.T) {
+	skipIfAlreadySandboxed(t)
+	skipIfCommandNotFound(t, "python3")
+
+	features := DetectLinuxFeatures()
+	if !features.CanUnshareNet {
+		t.Skip("skipping: reverse bridge requires network namespace support")
+	}
+
+	workspace := createTempWorkspace(t)
+	cfg := testConfigWithWorkspace(workspace)
+	cfg.Network.AllowLocalBinding = true
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate test port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+
+	manager := NewManager(cfg, false, false)
+	manager.SetExposedPorts([]int{port})
+	defer manager.Cleanup()
+
+	if err := manager.Initialize(); err != nil {
+		t.Fatalf("failed to initialize sandbox manager: %v", err)
+	}
+
+	command := "python3 -m http.server " + strconv.Itoa(port) + " --bind 127.0.0.1"
+	wrappedCmd, err := manager.WrapCommand(command)
+	if err != nil {
+		t.Fatalf("failed to wrap command: %v", err)
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", wrappedCmd)
+	cmd.Dir = workspace
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start sandboxed server: %v", err)
+	}
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	}()
+
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+	}
+
+	url := "http://127.0.0.1:" + strconv.Itoa(port)
+	var lastErr error
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			lastErr = err
+		} else {
+			lastErr = err
+		}
+
+		if cmd.Process != nil && cmd.Process.Signal(syscall.Signal(0)) != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	t.Fatalf("failed to reach sandboxed server via exposed port: %v\nstdout: %s\nstderr: %s", lastErr, stdout.String(), stderr.String())
 }
 
 // TestLinux_ProxyAllowsAllowedDomains verifies the proxy allows configured domains.

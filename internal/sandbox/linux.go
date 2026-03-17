@@ -53,6 +53,12 @@ type LinuxSandboxOptions struct {
 	ShellLogin bool
 }
 
+const (
+	linuxBootstrapDir       = "/tmp/fence"
+	linuxBootstrapInputPath = linuxBootstrapDir + "/bootstrap.stdin"
+	linuxBootstrapLogPath   = linuxBootstrapDir + "/bootstrap.log"
+)
+
 // NewLinuxBridge creates Unix socket bridges to the proxy servers.
 // This allows sandboxed processes to communicate with the host's proxy (outbound).
 func NewLinuxBridge(httpProxyPort, socksProxyPort int, debug bool) (*LinuxBridge, error) {
@@ -355,6 +361,164 @@ func WrapCommandLinuxWithShell(cfg *config.Config, command string, bridge *Linux
 		ShellMode:   shellMode,
 		ShellLogin:  shellLogin,
 	})
+}
+
+func buildLinuxBootstrapScript(
+	cfg *config.Config,
+	command string,
+	bridge *LinuxBridge,
+	reverseBridge *ReverseBridge,
+	opts LinuxSandboxOptions,
+	useLandlockWrapper bool,
+	fenceExePath string,
+	shellPath string,
+	shellFlag string,
+) (string, error) {
+	var script strings.Builder
+
+	_, _ = fmt.Fprintf(&script, `
+fence_bootstrap_dir=%s
+mkdir -p "$fence_bootstrap_dir"
+fence_bootstrap_input=%s
+fence_bootstrap_log=%s
+: >"$fence_bootstrap_input"
+: >"$fence_bootstrap_log"
+
+fence_start_helper() {
+    "$@" <"$fence_bootstrap_input" >>"$fence_bootstrap_log" 2>&1 &
+}
+
+fence_wait_for_helpers() {
+    attempts=100
+    while [ "$attempts" -gt 0 ]; do
+        all_alive=1
+`, ShellQuoteSingle(linuxBootstrapDir), ShellQuoteSingle(linuxBootstrapInputPath), ShellQuoteSingle(linuxBootstrapLogPath))
+
+	for _, pidVar := range bootstrapPIDVars(bridge, reverseBridge) {
+		_, _ = fmt.Fprintf(&script, `        if ! kill -0 "$%s" >>"$fence_bootstrap_log" 2>&1; then
+            all_alive=0
+        fi
+`, pidVar)
+	}
+	for _, socketPath := range bootstrapSocketPaths(reverseBridge) {
+		_, _ = fmt.Fprintf(&script, `        if [ ! -S %s ]; then
+            all_alive=0
+        fi
+`, ShellQuoteSingle(socketPath))
+	}
+
+	script.WriteString(`        if [ "$all_alive" -eq 1 ]; then
+            return 0
+        fi
+        sleep 0.05
+        attempts=$((attempts - 1))
+    done
+    echo "[fence:linux] bootstrap helpers failed to become ready; see $fence_bootstrap_log" >&2
+    return 1
+}
+
+# Cleanup function
+cleanup() {
+    jobs -p | xargs -r kill >>"$fence_bootstrap_log" 2>&1 || true
+}
+trap cleanup EXIT
+`)
+
+	if bridge != nil {
+		_, _ = fmt.Fprintf(&script, `
+# Start HTTP proxy listener (port 3128 -> Unix socket -> host HTTP proxy)
+fence_start_helper %s
+HTTP_PID=$!
+
+# Start SOCKS proxy listener (port 1080 -> Unix socket -> host SOCKS proxy)
+fence_start_helper %s
+SOCKS_PID=$!
+
+# Set proxy environment variables
+export HTTP_PROXY=http://127.0.0.1:3128
+export HTTPS_PROXY=http://127.0.0.1:3128
+export http_proxy=http://127.0.0.1:3128
+export https_proxy=http://127.0.0.1:3128
+export ALL_PROXY=socks5h://127.0.0.1:1080
+export all_proxy=socks5h://127.0.0.1:1080
+export NO_PROXY=localhost,127.0.0.1
+export no_proxy=localhost,127.0.0.1
+export FENCE_SANDBOX=1
+
+`,
+			ShellQuote([]string{
+				"socat",
+				fmt.Sprintf("TCP-LISTEN:%d,fork,reuseaddr", 3128),
+				fmt.Sprintf("UNIX-CONNECT:%s", bridge.HTTPSocketPath),
+			}),
+			ShellQuote([]string{
+				"socat",
+				fmt.Sprintf("TCP-LISTEN:%d,fork,reuseaddr", 1080),
+				fmt.Sprintf("UNIX-CONNECT:%s", bridge.SOCKSSocketPath),
+			}),
+		)
+	}
+
+	if reverseBridge != nil && len(reverseBridge.Ports) > 0 {
+		script.WriteString("\n# Start reverse bridge listeners for inbound connections\n")
+		for i, port := range reverseBridge.Ports {
+			socketPath := reverseBridge.SocketPaths[i]
+			_, _ = fmt.Fprintf(&script, "fence_start_helper %s\n",
+				ShellQuote([]string{
+					"socat",
+					fmt.Sprintf("UNIX-LISTEN:%s,fork,reuseaddr", socketPath),
+					fmt.Sprintf("TCP:127.0.0.1:%d", port),
+				}),
+			)
+			_, _ = fmt.Fprintf(&script, "REV_%d_PID=$!\n", port)
+		}
+		script.WriteString("\n")
+	}
+
+	if len(bootstrapPIDVars(bridge, reverseBridge)) > 0 {
+		script.WriteString("fence_wait_for_helpers\n\n")
+	}
+
+	if useLandlockWrapper {
+		if cfg != nil {
+			configJSON, err := json.Marshal(cfg)
+			if err == nil {
+				_, _ = fmt.Fprintf(&script, "export FENCE_CONFIG_JSON=%s\n", ShellQuoteSingle(string(configJSON)))
+			}
+		}
+
+		wrapperArgs := []string{fenceExePath, "--landlock-apply"}
+		if opts.Debug {
+			wrapperArgs = append(wrapperArgs, "--debug")
+		}
+		wrapperArgs = append(wrapperArgs, "--", shellPath, shellFlag, command)
+		_, _ = fmt.Fprintf(&script, "exec %s\n", ShellQuote(wrapperArgs))
+		return script.String(), nil
+	}
+
+	script.WriteString(command)
+	script.WriteString("\n")
+	return script.String(), nil
+}
+
+func bootstrapPIDVars(bridge *LinuxBridge, reverseBridge *ReverseBridge) []string {
+	var pidVars []string
+	if bridge != nil {
+		pidVars = append(pidVars, "HTTP_PID", "SOCKS_PID")
+	}
+	if reverseBridge != nil {
+		for _, port := range reverseBridge.Ports {
+			pidVars = append(pidVars, fmt.Sprintf("REV_%d_PID", port))
+		}
+	}
+	return pidVars
+}
+
+func bootstrapSocketPaths(reverseBridge *ReverseBridge) []string {
+	if reverseBridge == nil {
+		return nil
+	}
+	return reverseBridge.SocketPaths
 }
 
 // WrapCommandLinuxWithOptions wraps a command with configurable sandbox options.
@@ -831,90 +995,12 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 
 	bwrapArgs = append(bwrapArgs, "--", shellPath, shellFlag)
 
-	// Build the inner command that sets up socat listeners and runs the user command
-	var innerScript strings.Builder
-
-	if bridge != nil {
-		// Set up outbound socat listeners inside the sandbox
-		innerScript.WriteString(fmt.Sprintf(`
-# Start HTTP proxy listener (port 3128 -> Unix socket -> host HTTP proxy)
-socat TCP-LISTEN:3128,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 &
-HTTP_PID=$!
-
-# Start SOCKS proxy listener (port 1080 -> Unix socket -> host SOCKS proxy)
-socat TCP-LISTEN:1080,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 &
-SOCKS_PID=$!
-
-# Set proxy environment variables
-export HTTP_PROXY=http://127.0.0.1:3128
-export HTTPS_PROXY=http://127.0.0.1:3128
-export http_proxy=http://127.0.0.1:3128
-export https_proxy=http://127.0.0.1:3128
-export ALL_PROXY=socks5h://127.0.0.1:1080
-export all_proxy=socks5h://127.0.0.1:1080
-export NO_PROXY=localhost,127.0.0.1
-export no_proxy=localhost,127.0.0.1
-export FENCE_SANDBOX=1
-
-`, bridge.HTTPSocketPath, bridge.SOCKSSocketPath))
+	innerScript, err := buildLinuxBootstrapScript(cfg, command, bridge, reverseBridge, opts, useLandlockWrapper, fenceExePath, shellPath, shellFlag)
+	if err != nil {
+		return "", err
 	}
 
-	// Set up reverse (inbound) socat listeners inside the sandbox
-	if reverseBridge != nil && len(reverseBridge.Ports) > 0 {
-		innerScript.WriteString("\n# Start reverse bridge listeners for inbound connections\n")
-		for i, port := range reverseBridge.Ports {
-			socketPath := reverseBridge.SocketPaths[i]
-			// Listen on Unix socket, forward to localhost:port inside the sandbox
-			innerScript.WriteString(fmt.Sprintf(
-				"socat UNIX-LISTEN:%s,fork,reuseaddr TCP:127.0.0.1:%d >/dev/null 2>&1 &\n",
-				socketPath, port,
-			))
-			innerScript.WriteString(fmt.Sprintf("REV_%d_PID=$!\n", port))
-		}
-		innerScript.WriteString("\n")
-	}
-
-	// Add cleanup function
-	innerScript.WriteString(`
-# Cleanup function
-cleanup() {
-    jobs -p | xargs -r kill 2>/dev/null
-}
-trap cleanup EXIT
-
-# Small delay to ensure socat listeners are ready
-sleep 0.1
-
-# Run the user command
-`)
-
-	// Use Landlock wrapper if available
-	if useLandlockWrapper {
-		// Pass config via environment variable (serialized as JSON)
-		// This ensures allowWrite/denyWrite rules are properly applied
-		if cfg != nil {
-			configJSON, err := json.Marshal(cfg)
-			if err == nil {
-				innerScript.WriteString(fmt.Sprintf("export FENCE_CONFIG_JSON=%s\n", ShellQuoteSingle(string(configJSON))))
-			}
-		}
-
-		// Build wrapper command with proper quoting
-		// Use bash -c to preserve shell semantics (e.g., "echo hi && ls")
-		wrapperArgs := []string{fenceExePath, "--landlock-apply"}
-		if opts.Debug {
-			wrapperArgs = append(wrapperArgs, "--debug")
-		}
-		wrapperArgs = append(wrapperArgs, "--", shellPath, shellFlag, command)
-
-		// Use exec to replace bash with the wrapper (which will exec the command)
-		innerScript.WriteString(fmt.Sprintf("exec %s\n", ShellQuote(wrapperArgs)))
-	} else {
-		innerScript.WriteString(command)
-		innerScript.WriteString("\n")
-	}
-
-	bwrapArgs = append(bwrapArgs, innerScript.String())
+	bwrapArgs = append(bwrapArgs, innerScript)
 
 	if opts.Debug {
 		var featureList []string
