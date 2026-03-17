@@ -476,7 +476,7 @@ export FENCE_SANDBOX=1
 	}
 
 	if len(bootstrapPIDVars(bridge, reverseBridge)) > 0 {
-		script.WriteString("fence_wait_for_helpers\n\n")
+		script.WriteString("fence_wait_for_helpers || exit 1\n\n")
 	}
 
 	if useLandlockWrapper {
