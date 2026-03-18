@@ -164,7 +164,8 @@ func DefaultConfigPath() string {
 }
 
 // ResolveDefaultConfigPath returns the config path fence should load by default.
-// It prefers the canonical path, but falls back to legacy locations if they exist.
+// It prefers the canonical path when that file exists, but falls back to legacy
+// locations while migrating older configs.
 func ResolveDefaultConfigPath() string {
 	home, _ := os.UserHomeDir()
 	configDir, _ := os.UserConfigDir()
@@ -184,11 +185,6 @@ func resolveDefaultConfigPathFor(goos, home, userConfigDir string, exists func(s
 	canonicalPath := defaultConfigPathFor(goos, home, userConfigDir)
 	if canonicalPath != "fence.json" {
 		if exists(canonicalPath) {
-			return canonicalPath
-		}
-		// If the parent directory exists, prefer the canonical location even before
-		// the file has been created so new configs land in the expected place.
-		if exists(filepath.Dir(canonicalPath)) {
 			return canonicalPath
 		}
 	}

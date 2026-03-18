@@ -566,7 +566,7 @@ func TestResolveDefaultConfigPathFor(t *testing.T) {
 			want: darwinCanonical,
 		},
 		{
-			name:          "darwin prefers canonical path when canonical directory exists",
+			name:          "darwin still loads legacy file when only canonical directory exists",
 			goos:          "darwin",
 			home:          darwinHome,
 			userConfigDir: filepath.Join(darwinHome, "Library", "Application Support"),
@@ -574,7 +574,7 @@ func TestResolveDefaultConfigPathFor(t *testing.T) {
 				filepath.Dir(darwinCanonical): true,
 				darwinLegacyAppSupport:        true,
 			},
-			want: darwinCanonical,
+			want: darwinLegacyAppSupport,
 		},
 		{
 			name:          "darwin falls back to legacy application support file",
@@ -595,6 +595,16 @@ func TestResolveDefaultConfigPathFor(t *testing.T) {
 				darwinLegacyDotfile: true,
 			},
 			want: darwinLegacyDotfile,
+		},
+		{
+			name:          "darwin returns canonical path when no config exists yet",
+			goos:          "darwin",
+			home:          darwinHome,
+			userConfigDir: filepath.Join(darwinHome, "Library", "Application Support"),
+			existing: map[string]bool{
+				filepath.Dir(darwinCanonical): true,
+			},
+			want: darwinCanonical,
 		},
 		{
 			name:          "linux prefers canonical path",
