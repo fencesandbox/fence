@@ -95,7 +95,7 @@ fence --help
 
 ### Configuration
 
-Fence reads from `~/.config/fence/fence.json` by default on Linux and macOS. Legacy macOS `~/Library/Application Support/fence/fence.json` and legacy `~/.fence.json` are also supported. See [configuration reference](./docs/configuration.md).
+Fence reads from (`~/.config/fence/fence.json`) by default. See [configuration reference](./docs/configuration.md) for more details.
 
 ```json
 {

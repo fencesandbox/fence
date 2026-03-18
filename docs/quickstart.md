@@ -93,7 +93,7 @@ Create a starter config:
 fence config init
 ```
 
-By default, this writes `{"extends":"code"}` to `~/.config/fence/fence.json` on Linux and macOS, so common coding workflows work out of the box.
+By default, this writes `{"extends":"code"}` to `$XDG_CONFIG_HOME/fence/fence.json` on Linux (typically `~/.config/fence/fence.json`) and `~/.config/fence/fence.json` on macOS, so common coding workflows work out of the box.
 
 If you want a starter file with empty arrays as editable hints, use:
 

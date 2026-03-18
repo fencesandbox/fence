@@ -61,7 +61,8 @@ func main() {
 with network and filesystem restrictions.
 
 By default, all network access is blocked. Configure allowed domains in
-~/.config/fence/fence.json on Linux and macOS, or pass
+$XDG_CONFIG_HOME/fence/fence.json on Linux (typically
+~/.config/fence/fence.json) or ~/.config/fence/fence.json on macOS, or pass
 a settings file with --settings, or use a built-in template with --template.
 
 Examples:
@@ -440,7 +441,8 @@ Examples:
   fence import --claude
 
   # Save to the default config path
-  #   Linux/macOS: ~/.config/fence/fence.json
+  #   Linux: $XDG_CONFIG_HOME/fence/fence.json (typically ~/.config/fence/fence.json)
+  #   macOS: ~/.config/fence/fence.json
   fence import --claude --save
 
   # Save to a specific output file
