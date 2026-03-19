@@ -27,7 +27,7 @@ docker run --rm \
     apt-get update
     apt-get install -y bubblewrap socat python3 python3-pip
 
-    go build -o /usr/local/bin/fence ./cmd/fence
+    go build -buildvcs=false -o /usr/local/bin/fence ./cmd/fence
     python3 -m pip install -q grpcio
 
     cat >/tmp/fence.json <<'"'"'EOF'"'"'
