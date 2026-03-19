@@ -118,19 +118,42 @@ jobs:
         run: FENCE_TEST_NETWORK=1 ./scripts/smoke_test.sh ./fence
 
   repro-minimal-devices:
-    name: Repro minimal /dev (${{ matrix.runner }})
+    name: Repro minimal /dev (${{ matrix.runner }}, ${{ matrix.image_name }})
     runs-on: ${{ matrix.runner }}
     continue-on-error: true
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-24.04]
+        include:
+          - runner: ubuntu-22.04
+            image_name: golang-bookworm
+            image: golang:1.25-bookworm
+          - runner: ubuntu-22.04
+            image_name: python39-slim
+            image: python:3.9-slim
+          - runner: ubuntu-24.04
+            image_name: golang-bookworm
+            image: golang:1.25-bookworm
+          - runner: ubuntu-24.04
+            image_name: python39-slim
+            image: python:3.9-slim
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build fence binary for nested repro
+        run: go build -buildvcs=false -o ./fence-repro-bin ./cmd/fence
+
       - name: Run nested Docker repro
+        env:
+          FENCE_REPRO_IMAGE: ${{ matrix.image }}
         run: bash ./scripts/repro_minimal_devices_ci.sh
 
   test-macos:

@@ -17,17 +17,29 @@ docker run --rm \
   -v "$PWD":/src \
   -w /src \
   "$IMAGE" \
-  bash -c '
-    set -euo pipefail
+  sh -c '
+    set -eu
 
     echo "=== Container diagnostics ==="
     echo "kernel: $(uname -r)"
     echo "user: $(id)"
 
     apt-get update
-    apt-get install -y bubblewrap socat python3 python3-venv
+    apt-get install -y bubblewrap socat
+    if ! command -v python3 >/dev/null 2>&1; then
+      apt-get install -y python3 python3-venv
+    elif ! python3 -m venv --help >/dev/null 2>&1; then
+      apt-get install -y python3-venv
+    fi
 
-    go build -buildvcs=false -o /usr/local/bin/fence ./cmd/fence
+    if [ -x /src/fence-repro-bin ] && /src/fence-repro-bin --version >/dev/null 2>&1; then
+      install -m 0755 /src/fence-repro-bin /usr/local/bin/fence
+    elif command -v go >/dev/null 2>&1; then
+      go build -buildvcs=false -o /usr/local/bin/fence ./cmd/fence
+    else
+      echo "No usable Linux fence binary found at /src/fence-repro-bin and Go is unavailable in the container" >&2
+      exit 1
+    fi
     VENV_DIR="$(mktemp -d /src/.fence-repro-venv.XXXXXX)"
     trap "rm -rf \"${VENV_DIR}\"" EXIT
     python3 -m venv "${VENV_DIR}"
@@ -38,7 +50,22 @@ docker run --rm \
 {"devices":{"mode":"minimal"}}
 EOF
 
-    echo "=== Device probe under fence ==="
+    cat >/tmp/fence-replay-like.json <<'"'"'EOF'"'"'
+{
+  "devices": { "mode": "minimal" },
+  "network": {
+    "allowedDomains": ["localhost", "127.0.0.1"],
+    "allowLocalBinding": true,
+    "allowLocalOutbound": false,
+    "allowAllUnixSockets": true
+  },
+  "filesystem": {
+    "allowWrite": ["/src", "/tmp"]
+  }
+}
+EOF
+
+    echo "=== Device probe under fence (baseline) ==="
     device_status=0
     /usr/local/bin/fence --settings /tmp/fence.json -- "${PYTHON_BIN}" - <<'"'"'PY'"'"' || device_status=$?
 import os
@@ -68,9 +95,41 @@ for path in ("/dev/null", "/dev/random", "/dev/urandom"):
 print("getrandom:", len(os.getrandom(1)))
 sys.exit(1 if failures else 0)
 PY
-    echo "device_status=${device_status}"
+    echo "device_status(baseline)=${device_status}"
 
-    echo "=== gRPC startup probe under fence ==="
+    replay_device_status=0
+    echo "=== Device probe under fence (replay-like) ==="
+    /usr/local/bin/fence -p 8000 --settings /tmp/fence-replay-like.json -- "${PYTHON_BIN}" - <<'"'"'PY'"'"' || replay_device_status=$?
+import os
+import stat
+import sys
+
+failures = 0
+
+print(f"uid={os.getuid()} euid={os.geteuid()} cwd={os.getcwd()}")
+print("/dev entries:", ", ".join(sorted(os.listdir("/dev"))))
+
+for path in ("/dev/null", "/dev/random", "/dev/urandom"):
+    st = os.stat(path)
+    kind = "char" if stat.S_ISCHR(st.st_mode) else "other"
+    device_id = "-"
+    if stat.S_ISCHR(st.st_mode):
+        device_id = f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}"
+    print(f"{path} mode={oct(stat.S_IMODE(st.st_mode))} kind={kind} rdev={device_id}")
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        os.close(fd)
+        print(path, "ok")
+    except OSError as exc:
+        print(path, f"errno={exc.errno} strerror={exc.strerror}")
+        failures += 1
+
+print("getrandom:", len(os.getrandom(1)))
+sys.exit(1 if failures else 0)
+PY
+    echo "device_status(replay-like)=${replay_device_status}"
+
+    echo "=== gRPC startup probe under fence (baseline) ==="
     grpc_status=0
     /usr/local/bin/fence --settings /tmp/fence.json -- "${PYTHON_BIN}" - <<'"'"'PY'"'"' || grpc_status=$?
 from concurrent import futures
@@ -87,9 +146,31 @@ print("after server.start()", flush=True)
 server.stop(0)
 print("after server.stop()", flush=True)
 PY
-    echo "grpc_status=${grpc_status}"
+    echo "grpc_status(baseline)=${grpc_status}"
 
-    if [ "${device_status}" -ne 0 ] || [ "${grpc_status}" -ne 0 ]; then
+    replay_grpc_status=0
+    echo "=== gRPC startup probe under fence (replay-like) ==="
+    /usr/local/bin/fence -p 8000 --settings /tmp/fence-replay-like.json -- "${PYTHON_BIN}" - <<'"'"'PY'"'"' || replay_grpc_status=$?
+from concurrent import futures
+
+import grpc
+
+print("before grpc.server()", flush=True)
+server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+print("after grpc.server()", flush=True)
+port = server.add_insecure_port("[::]:50051")
+print(f"add_insecure_port={port}", flush=True)
+server.start()
+print("after server.start()", flush=True)
+server.stop(0)
+print("after server.stop()", flush=True)
+PY
+    echo "grpc_status(replay-like)=${replay_grpc_status}"
+
+    if [ "${device_status}" -ne 0 ] || \
+       [ "${replay_device_status}" -ne 0 ] || \
+       [ "${grpc_status}" -ne 0 ] || \
+       [ "${replay_grpc_status}" -ne 0 ]; then
       echo "=== Reproducer detected a failure ==="
       exit 1
     fi
