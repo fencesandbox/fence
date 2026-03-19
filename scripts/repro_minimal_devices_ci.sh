@@ -25,10 +25,13 @@ docker run --rm \
     echo "user: $(id)"
 
     apt-get update
-    apt-get install -y bubblewrap socat python3 python3-pip
+    apt-get install -y bubblewrap socat python3 python3-venv
 
     go build -buildvcs=false -o /usr/local/bin/fence ./cmd/fence
-    python3 -m pip install -q grpcio
+    VENV_DIR=/tmp/fence-repro-venv
+    python3 -m venv "${VENV_DIR}"
+    "${VENV_DIR}/bin/python" -m pip install -q grpcio
+    PYTHON_BIN="${VENV_DIR}/bin/python"
 
     cat >/tmp/fence.json <<'"'"'EOF'"'"'
 {"devices":{"mode":"minimal"}}
@@ -36,7 +39,7 @@ EOF
 
     echo "=== Device probe under fence ==="
     device_status=0
-    /usr/local/bin/fence --settings /tmp/fence.json -- python3 - <<'"'"'PY'"'"' || device_status=$?
+    /usr/local/bin/fence --settings /tmp/fence.json -- "${PYTHON_BIN}" - <<'"'"'PY'"'"' || device_status=$?
 import os
 import stat
 import sys
@@ -68,7 +71,7 @@ PY
 
     echo "=== gRPC startup probe under fence ==="
     grpc_status=0
-    /usr/local/bin/fence --settings /tmp/fence.json -- python3 - <<'"'"'PY'"'"' || grpc_status=$?
+    /usr/local/bin/fence --settings /tmp/fence.json -- "${PYTHON_BIN}" - <<'"'"'PY'"'"' || grpc_status=$?
 from concurrent import futures
 
 import grpc
