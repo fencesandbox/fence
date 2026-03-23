@@ -785,7 +785,7 @@ func TestLinux_XDGRuntimeDirPreservedWhenWritable(t *testing.T) {
 	switch {
 	case strings.Contains(result.Stdout, "TMP="+tmpDir):
 		assertFileExists(t, filepath.Join(tmpDir, "fence-tmp-probe"))
-	case strings.Contains(result.Stdout, "TMP=/tmp"):
+	case strings.Contains(result.Stdout, "TMP=/tmp\n"):
 		// The in-sandbox touch above already proved TMPDIR is usable.
 	default:
 		t.Fatalf("expected sandbox TMPDIR to remain %q or fall back to /tmp, got %q", tmpDir, result.Stdout)
