@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -1188,6 +1189,36 @@ func TestSSHConfigValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMergeAcceptSharedBinaryCannotRuntimeDeny(t *testing.T) {
+	t.Run("base and override are appended", func(t *testing.T) {
+		base := &Config{Command: CommandConfig{AcceptSharedBinaryCannotRuntimeDeny: []string{"dd"}}}
+		override := &Config{Command: CommandConfig{AcceptSharedBinaryCannotRuntimeDeny: []string{"curl"}}}
+		result := Merge(base, override)
+		if !slices.Contains(result.Command.AcceptSharedBinaryCannotRuntimeDeny, "dd") {
+			t.Error("expected base entry 'dd' to be present after merge")
+		}
+		if !slices.Contains(result.Command.AcceptSharedBinaryCannotRuntimeDeny, "curl") {
+			t.Error("expected override entry 'curl' to be present after merge")
+		}
+	})
+
+	t.Run("base entries inherited when override is unset", func(t *testing.T) {
+		base := &Config{Command: CommandConfig{AcceptSharedBinaryCannotRuntimeDeny: []string{"dd"}}}
+		override := &Config{}
+		result := Merge(base, override)
+		if !slices.Contains(result.Command.AcceptSharedBinaryCannotRuntimeDeny, "dd") {
+			t.Error("expected base entry 'dd' to be inherited when override is nil")
+		}
+	})
+
+	t.Run("nil when both unset", func(t *testing.T) {
+		result := Merge(&Config{}, &Config{})
+		if len(result.Command.AcceptSharedBinaryCannotRuntimeDeny) != 0 {
+			t.Errorf("expected empty AcceptSharedBinaryCannotRuntimeDeny when both unset, got %v", result.Command.AcceptSharedBinaryCannotRuntimeDeny)
+		}
+	})
 }
 
 func TestMergeSSHConfig(t *testing.T) {

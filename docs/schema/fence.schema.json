@@ -13,6 +13,12 @@
     "command": {
       "additionalProperties": false,
       "properties": {
+        "acceptSharedBinaryCannotRuntimeDeny": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "allow": {
           "items": {
             "type": "string"
