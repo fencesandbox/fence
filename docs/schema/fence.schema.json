@@ -8,30 +8,36 @@
       "type": "string"
     },
     "allowPty": {
+      "description": "Allow the sandboxed process to allocate a pseudo-terminal (PTY). Required for interactive programs that need terminal control (e.g. vim, less, top).",
       "type": "boolean"
     },
     "command": {
       "additionalProperties": false,
+      "description": "Command execution restrictions. Controls which commands are blocked or allowed at preflight and runtime.",
       "properties": {
         "acceptSharedBinaryCannotRuntimeDeny": {
+          "description": "Commands for which the shared-binary skip warning is silenced. Add a command here after investigating a collision and accepting that it cannot be blocked on this system.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "allow": {
+          "description": "Commands that override a matching deny rule. Use to carve out specific exceptions from a broad deny pattern (e.g. allow \"git push origin docs\" when \"git push\" is denied).",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "deny": {
+          "description": "Commands or command prefixes the sandbox will refuse to run. Matched at both preflight (string parse) and runtime (executable path masking). Single-token entries (e.g. \"dd\") are also enforced at the OS level.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "useDefaults": {
+          "description": "Whether to include the built-in default deny list (shutdown, reboot, insmod, mkfs, etc.). Defaults to true when omitted. Set to false to manage the deny list entirely yourself.",
           "type": [
             "boolean",
             "null"
@@ -62,48 +68,58 @@
       "type": "object"
     },
     "extends": {
+      "description": "Path or built-in template name to inherit base settings from (e.g. \"code\" or \"./base.json\"). Settings in this file are merged on top of the extended config.",
       "type": "string"
     },
     "filesystem": {
       "additionalProperties": false,
+      "description": "Filesystem access restrictions. Controls which paths may be read, written, or executed inside the sandbox.",
       "properties": {
         "allowExecute": {
+          "description": "Paths the sandbox may execute (grants read and execute permission, but not directory listing). Use for binaries that must be reachable but whose parent directories should not be browsable.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "allowGitConfig": {
+          "description": "If true, allow read access to ~/.gitconfig and ~/.config/git. Enable when git operations inside the sandbox need the user's identity or settings.",
           "type": "boolean"
         },
         "allowRead": {
+          "description": "Additional filesystem paths the sandbox may read. Accepts absolute paths and glob patterns.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "allowWrite": {
+          "description": "Filesystem paths the sandbox may write to. Accepts absolute paths and glob patterns.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "defaultDenyRead": {
+          "description": "If true, deny all filesystem reads by default. Only paths listed in allowRead (and essential system paths) remain readable. Use for strict read isolation.",
           "type": "boolean"
         },
         "denyRead": {
+          "description": "Paths explicitly blocked from reading, even if they would otherwise be permitted by allowRead or system defaults.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "denyWrite": {
+          "description": "Paths explicitly blocked from writing, even if they would otherwise be permitted by allowWrite.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "wslInterop": {
+          "description": "Controls access to the WSL interop binary on Windows Subsystem for Linux. If omitted, auto-detected: WSL environments allow /init, non-WSL environments do not.",
           "type": [
             "boolean",
             "null"
@@ -120,41 +136,50 @@
     },
     "network": {
       "additionalProperties": false,
+      "description": "Network access restrictions. Controls which domains the sandbox may connect to and how local networking is handled.",
       "properties": {
         "allowAllUnixSockets": {
+          "description": "If true, allow connections to any Unix socket path. Overrides allowUnixSockets.",
           "type": "boolean"
         },
         "allowLocalBinding": {
+          "description": "Allow the sandbox to bind to local network ports. Enable this when the sandboxed process needs to run a local server.",
           "type": "boolean"
         },
         "allowLocalOutbound": {
+          "description": "Allow outbound connections to localhost and loopback addresses. If omitted, inherits the value of allowLocalBinding.",
           "type": [
             "boolean",
             "null"
           ]
         },
         "allowUnixSockets": {
+          "description": "Unix socket paths the sandbox may connect to (e.g. /var/run/docker.sock).",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "allowedDomains": {
+          "description": "Domains the sandbox may connect to. Supports wildcards (e.g. *.example.com). Use \"*\" to allow all outbound connections. If empty, all outbound connections are blocked.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "deniedDomains": {
+          "description": "Domains explicitly blocked even if they match allowedDomains. Evaluated before allowedDomains.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "httpProxyPort": {
+          "description": "Port for the internal HTTP proxy used to enforce domain filtering. Set automatically by fence; only override for advanced configurations.",
           "type": "integer"
         },
         "socksProxyPort": {
+          "description": "Port for the internal SOCKS proxy used to enforce domain filtering. Set automatically by fence; only override for advanced configurations.",
           "type": "integer"
         }
       },
@@ -162,35 +187,42 @@
     },
     "ssh": {
       "additionalProperties": false,
+      "description": "SSH command and host restrictions. Applies only to ssh invocations; does not affect other network access.",
       "properties": {
         "allowAllCommands": {
+          "description": "If true, switch SSH command filtering to denylist mode: all remote commands are permitted except those in deniedCommands. When false (the default), allowedCommands acts as an allowlist.",
           "type": "boolean"
         },
         "allowedCommands": {
+          "description": "Commands permitted over SSH (allowlist mode). Only the listed commands may be executed on remote hosts. An empty list allows interactive sessions only.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "allowedHosts": {
+          "description": "Host patterns the sandbox may SSH to. Supports wildcards (e.g. *.example.com, prod-*). SSH connections to hosts not matching any pattern are blocked.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "deniedCommands": {
+          "description": "Commands blocked over SSH (denylist mode). Only meaningful when allowAllCommands is true.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "deniedHosts": {
+          "description": "Host patterns explicitly blocked for SSH, even if they match allowedHosts. Evaluated before allowedHosts.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "inheritDeny": {
+          "description": "If true, also apply the global command.deny rules to SSH remote commands.",
           "type": "boolean"
         }
       },

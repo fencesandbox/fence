@@ -76,6 +76,10 @@ func schemaForType(t reflect.Type) (map[string]any, error) {
 			if err != nil {
 				return nil, err
 			}
+			if desc := field.Tag.Get("description"); desc != "" {
+				fieldSchema = cloneSchemaMap(fieldSchema)
+				fieldSchema["description"] = desc
+			}
 			properties[jsonName] = fieldSchema
 		}
 

@@ -16,26 +16,26 @@ import (
 
 // Config is the main configuration for fence.
 type Config struct {
-	Extends         string           `json:"extends,omitempty"`
-	Network         NetworkConfig    `json:"network"`
-	Filesystem      FilesystemConfig `json:"filesystem"`
+	Extends         string           `json:"extends,omitempty" description:"Path or built-in template name to inherit base settings from (e.g. \"code\" or \"./base.json\"). Settings in this file are merged on top of the extended config."`
+	Network         NetworkConfig    `json:"network" description:"Network access restrictions. Controls which domains the sandbox may connect to and how local networking is handled."`
+	Filesystem      FilesystemConfig `json:"filesystem" description:"Filesystem access restrictions. Controls which paths may be read, written, or executed inside the sandbox."`
 	Devices         DevicesConfig    `json:"devices,omitempty"`
-	Command         CommandConfig    `json:"command"`
-	SSH             SSHConfig        `json:"ssh"`
-	AllowPty        bool             `json:"allowPty,omitempty"`
+	Command         CommandConfig    `json:"command" description:"Command execution restrictions. Controls which commands are blocked or allowed at preflight and runtime."`
+	SSH             SSHConfig        `json:"ssh" description:"SSH command and host restrictions. Applies only to ssh invocations; does not affect other network access."`
+	AllowPty        bool             `json:"allowPty,omitempty" description:"Allow the sandboxed process to allocate a pseudo-terminal (PTY). Required for interactive programs that need terminal control (e.g. vim, less, top)."`
 	ForceNewSession *bool            `json:"forceNewSession,omitempty"`
 }
 
 // NetworkConfig defines network restrictions.
 type NetworkConfig struct {
-	AllowedDomains      []string `json:"allowedDomains"`
-	DeniedDomains       []string `json:"deniedDomains"`
-	AllowUnixSockets    []string `json:"allowUnixSockets,omitempty"`
-	AllowAllUnixSockets bool     `json:"allowAllUnixSockets,omitempty"`
-	AllowLocalBinding   bool     `json:"allowLocalBinding,omitempty"`
-	AllowLocalOutbound  *bool    `json:"allowLocalOutbound,omitempty"` // If nil, defaults to AllowLocalBinding value
-	HTTPProxyPort       int      `json:"httpProxyPort,omitempty"`
-	SOCKSProxyPort      int      `json:"socksProxyPort,omitempty"`
+	AllowedDomains      []string `json:"allowedDomains" description:"Domains the sandbox may connect to. Supports wildcards (e.g. *.example.com). Use \"*\" to allow all outbound connections. If empty, all outbound connections are blocked."`
+	DeniedDomains       []string `json:"deniedDomains" description:"Domains explicitly blocked even if they match allowedDomains. Evaluated before allowedDomains."`
+	AllowUnixSockets    []string `json:"allowUnixSockets,omitempty" description:"Unix socket paths the sandbox may connect to (e.g. /var/run/docker.sock)."`
+	AllowAllUnixSockets bool     `json:"allowAllUnixSockets,omitempty" description:"If true, allow connections to any Unix socket path. Overrides allowUnixSockets."`
+	AllowLocalBinding   bool     `json:"allowLocalBinding,omitempty" description:"Allow the sandbox to bind to local network ports. Enable this when the sandboxed process needs to run a local server."`
+	AllowLocalOutbound  *bool    `json:"allowLocalOutbound,omitempty" description:"Allow outbound connections to localhost and loopback addresses. If omitted, inherits the value of allowLocalBinding."`
+	HTTPProxyPort       int      `json:"httpProxyPort,omitempty" description:"Port for the internal HTTP proxy used to enforce domain filtering. Set automatically by fence; only override for advanced configurations."`
+	SOCKSProxyPort      int      `json:"socksProxyPort,omitempty" description:"Port for the internal SOCKS proxy used to enforce domain filtering. Set automatically by fence; only override for advanced configurations."`
 }
 
 // DeviceMode controls how /dev is set up inside Linux sandboxes.
@@ -55,33 +55,33 @@ type DevicesConfig struct {
 
 // FilesystemConfig defines filesystem restrictions.
 type FilesystemConfig struct {
-	DefaultDenyRead bool     `json:"defaultDenyRead,omitempty"` // If true, deny reads by default except system paths and AllowRead
-	WSLInterop      *bool    `json:"wslInterop,omitempty"`      // If nil, auto-detect WSL and allow /init; true/false to override
-	AllowRead       []string `json:"allowRead"`                 // Paths to allow reading
-	AllowExecute    []string `json:"allowExecute"`              // Paths to allow executing (read+execute only, no directory listing)
-	DenyRead        []string `json:"denyRead"`
-	AllowWrite      []string `json:"allowWrite"`
-	DenyWrite       []string `json:"denyWrite"`
-	AllowGitConfig  bool     `json:"allowGitConfig,omitempty"`
+	DefaultDenyRead bool     `json:"defaultDenyRead,omitempty" description:"If true, deny all filesystem reads by default. Only paths listed in allowRead (and essential system paths) remain readable. Use for strict read isolation."`
+	WSLInterop      *bool    `json:"wslInterop,omitempty" description:"Controls access to the WSL interop binary on Windows Subsystem for Linux. If omitted, auto-detected: WSL environments allow /init, non-WSL environments do not."`
+	AllowRead       []string `json:"allowRead" description:"Additional filesystem paths the sandbox may read. Accepts absolute paths and glob patterns."`
+	AllowExecute    []string `json:"allowExecute" description:"Paths the sandbox may execute (grants read and execute permission, but not directory listing). Use for binaries that must be reachable but whose parent directories should not be browsable."`
+	DenyRead        []string `json:"denyRead" description:"Paths explicitly blocked from reading, even if they would otherwise be permitted by allowRead or system defaults."`
+	AllowWrite      []string `json:"allowWrite" description:"Filesystem paths the sandbox may write to. Accepts absolute paths and glob patterns."`
+	DenyWrite       []string `json:"denyWrite" description:"Paths explicitly blocked from writing, even if they would otherwise be permitted by allowWrite."`
+	AllowGitConfig  bool     `json:"allowGitConfig,omitempty" description:"If true, allow read access to ~/.gitconfig and ~/.config/git. Enable when git operations inside the sandbox need the user's identity or settings."`
 }
 
 // CommandConfig defines command restrictions.
 type CommandConfig struct {
-	Deny                                []string `json:"deny"`
-	Allow                               []string `json:"allow"`
-	UseDefaults                         *bool    `json:"useDefaults,omitempty"`
-	AcceptSharedBinaryCannotRuntimeDeny []string `json:"acceptSharedBinaryCannotRuntimeDeny,omitempty"`
+	Deny                                []string `json:"deny" description:"Commands or command prefixes the sandbox will refuse to run. Matched at both preflight (string parse) and runtime (executable path masking). Single-token entries (e.g. \"dd\") are also enforced at the OS level."`
+	Allow                               []string `json:"allow" description:"Commands that override a matching deny rule. Use to carve out specific exceptions from a broad deny pattern (e.g. allow \"git push origin docs\" when \"git push\" is denied)."`
+	UseDefaults                         *bool    `json:"useDefaults,omitempty" description:"Whether to include the built-in default deny list (shutdown, reboot, insmod, mkfs, etc.). Defaults to true when omitted. Set to false to manage the deny list entirely yourself."`
+	AcceptSharedBinaryCannotRuntimeDeny []string `json:"acceptSharedBinaryCannotRuntimeDeny,omitempty" description:"Commands for which the shared-binary skip warning is silenced. Add a command here after investigating a collision and accepting that it cannot be blocked on this system."`
 }
 
 // SSHConfig defines SSH command restrictions.
 // SSH commands are filtered using an allowlist by default for security.
 type SSHConfig struct {
-	AllowedHosts     []string `json:"allowedHosts"`               // Host patterns to allow SSH to (supports wildcards like *.example.com)
-	DeniedHosts      []string `json:"deniedHosts"`                // Host patterns to deny SSH to (checked before allowed)
-	AllowedCommands  []string `json:"allowedCommands"`            // Commands allowed over SSH (allowlist mode)
-	DeniedCommands   []string `json:"deniedCommands"`             // Commands denied over SSH (checked before allowed)
-	AllowAllCommands bool     `json:"allowAllCommands,omitempty"` // If true, use denylist mode instead of allowlist
-	InheritDeny      bool     `json:"inheritDeny,omitempty"`      // If true, also apply global command.deny rules
+	AllowedHosts     []string `json:"allowedHosts" description:"Host patterns the sandbox may SSH to. Supports wildcards (e.g. *.example.com, prod-*). SSH connections to hosts not matching any pattern are blocked."`
+	DeniedHosts      []string `json:"deniedHosts" description:"Host patterns explicitly blocked for SSH, even if they match allowedHosts. Evaluated before allowedHosts."`
+	AllowedCommands  []string `json:"allowedCommands" description:"Commands permitted over SSH (allowlist mode). Only the listed commands may be executed on remote hosts. An empty list allows interactive sessions only."`
+	DeniedCommands   []string `json:"deniedCommands" description:"Commands blocked over SSH (denylist mode). Only meaningful when allowAllCommands is true."`
+	AllowAllCommands bool     `json:"allowAllCommands,omitempty" description:"If true, switch SSH command filtering to denylist mode: all remote commands are permitted except those in deniedCommands. When false (the default), allowedCommands acts as an allowlist."`
+	InheritDeny      bool     `json:"inheritDeny,omitempty" description:"If true, also apply the global command.deny rules to SSH remote commands."`
 }
 
 // DefaultDeniedCommands returns commands that are blocked by default.

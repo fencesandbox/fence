@@ -54,6 +54,29 @@ func TestGenerate_DevicesSchemaConstraints(t *testing.T) {
 	}
 }
 
+func TestGenerate_DescriptionTags(t *testing.T) {
+	generated, err := Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	var document map[string]any
+	if err := json.Unmarshal(generated, &document); err != nil {
+		t.Fatalf("failed to parse generated schema: %v", err)
+	}
+
+	properties := nestedMap(t, document, "properties")
+	allowPty := nestedMap(t, properties, "allowPty")
+
+	desc, ok := allowPty["description"]
+	if !ok {
+		t.Fatal("allowPty missing description")
+	}
+	if got, ok := desc.(string); !ok || got == "" {
+		t.Fatalf("allowPty description = %q, want non-empty string", desc)
+	}
+}
+
 func nestedMap(t *testing.T, value map[string]any, key string) map[string]any {
 	t.Helper()
 
