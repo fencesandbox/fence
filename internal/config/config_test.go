@@ -645,6 +645,83 @@ func TestResolveDefaultConfigPathFor(t *testing.T) {
 	}
 }
 
+func TestResolveConfigPathFor(t *testing.T) {
+	linuxHome := filepath.Join(string(os.PathSeparator), "home", "alice")
+	linuxConfigDir := filepath.Join(linuxHome, ".config")
+	linuxDefault := filepath.Join(linuxConfigDir, "fence", "fence.json")
+	projectRoot := filepath.Join(string(os.PathSeparator), "work", "demo")
+	projectConfig := filepath.Join(projectRoot, "fence.json")
+	childDir := filepath.Join(projectRoot, "packages", "web")
+
+	tests := []struct {
+		name          string
+		goos          string
+		home          string
+		userConfigDir string
+		startDir      string
+		existing      map[string]bool
+		want          string
+	}{
+		{
+			name:          "prefers nearest project config over default path",
+			goos:          "linux",
+			home:          linuxHome,
+			userConfigDir: linuxConfigDir,
+			startDir:      childDir,
+			existing: map[string]bool{
+				projectConfig: true,
+				linuxDefault:  true,
+			},
+			want: projectConfig,
+		},
+		{
+			name:          "walks up to parent directories",
+			goos:          "linux",
+			home:          linuxHome,
+			userConfigDir: linuxConfigDir,
+			startDir:      childDir,
+			existing: map[string]bool{
+				projectConfig: true,
+			},
+			want: projectConfig,
+		},
+		{
+			name:          "falls back to default path when no project config exists",
+			goos:          "linux",
+			home:          linuxHome,
+			userConfigDir: linuxConfigDir,
+			startDir:      childDir,
+			existing:      map[string]bool{},
+			want:          linuxDefault,
+		},
+		{
+			name:          "returns project config when start directory already contains one",
+			goos:          "linux",
+			home:          linuxHome,
+			userConfigDir: linuxConfigDir,
+			startDir:      projectRoot,
+			existing: map[string]bool{
+				projectConfig: true,
+			},
+			want: projectConfig,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveConfigPathFor(tt.goos, tt.home, tt.userConfigDir, tt.startDir, func(path string) bool {
+				return tt.existing[path]
+			})
+			if err != nil {
+				t.Fatalf("resolveConfigPathFor() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveConfigPathFor() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMerge(t *testing.T) {
 	t.Run("nil base", func(t *testing.T) {
 		override := &Config{

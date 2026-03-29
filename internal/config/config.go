@@ -175,6 +175,24 @@ func ResolveDefaultConfigPath() string {
 	return resolveDefaultConfigPathFor(runtime.GOOS, home, configDir, pathExists)
 }
 
+// ResolveConfigPath returns the config path fence should load when --settings is
+// not provided. It prefers the nearest fence.json in startDir or any parent
+// directory, and falls back to the user's default config path otherwise.
+func ResolveConfigPath(startDir string) (string, error) {
+	if startDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("failed to determine working directory: %w", err)
+		}
+		startDir = cwd
+	}
+
+	home, _ := os.UserHomeDir()
+	configDir, _ := os.UserConfigDir()
+
+	return resolveConfigPathFor(runtime.GOOS, home, configDir, startDir, pathExists)
+}
+
 func defaultConfigPathFor(goos, home, userConfigDir string) string {
 	canonicalPath := canonicalConfigPath(goos, home, userConfigDir)
 	if canonicalPath != "" {
@@ -198,6 +216,18 @@ func resolveDefaultConfigPathFor(goos, home, userConfigDir string, exists func(s
 	}
 
 	return canonicalPath
+}
+
+func resolveConfigPathFor(goos, home, userConfigDir, startDir string, exists func(string) bool) (string, error) {
+	projectPath, err := findNearestProjectConfigPath(startDir, exists)
+	if err != nil {
+		return "", err
+	}
+	if projectPath != "" {
+		return projectPath, nil
+	}
+
+	return resolveDefaultConfigPathFor(goos, home, userConfigDir, exists), nil
 }
 
 func canonicalConfigPath(goos, home, userConfigDir string) string {
@@ -228,6 +258,34 @@ func legacyConfigPaths(goos, home string) []string {
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func findNearestProjectConfigPath(startDir string, exists func(string) bool) (string, error) {
+	if startDir == "" {
+		return "", nil
+	}
+
+	current := filepath.Clean(startDir)
+	if !filepath.IsAbs(current) {
+		absPath, err := filepath.Abs(current)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve config search path %q: %w", startDir, err)
+		}
+		current = absPath
+	}
+
+	for {
+		candidate := filepath.Join(current, "fence.json")
+		if exists(candidate) {
+			return candidate, nil
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", nil
+		}
+		current = parent
+	}
 }
 
 // Load loads configuration from a file path.
