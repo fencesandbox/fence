@@ -14,6 +14,7 @@
       "api.together.xyz",
       "openrouter.ai",
       "api.morphllm.com",
+      "*.amazonaws.com",
 
       // OpenCode
       "opencode.ai",
@@ -29,6 +30,10 @@
 
       // Cursor API
       "*.cursor.sh",
+
+      // Charm
+      "data.charm.land",
+      "catwalk.charm.sh",
 
       // Git hosting
       "github.com",
