@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/Use-Tusk/fence/internal/config"
 )
@@ -445,7 +446,8 @@ type sharedExecutableCandidate struct {
 }
 
 type sharedExecutableSearch struct {
-	candidates []sharedExecutableCandidate
+	candidatesByDevice map[uint64][]sharedExecutableCandidate
+	candidatesFallback []sharedExecutableCandidate
 }
 
 func sharedExecutableProbeNames(paths []string, probeNames []string) []string {
@@ -469,15 +471,156 @@ func sharedExecutableProbeNames(paths []string, probeNames []string) []string {
 	return names
 }
 
+func fileInfoDeviceID(info os.FileInfo) (uint64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil {
+		return 0, false
+	}
+	switch dev := any(stat.Dev).(type) {
+	case int:
+		if dev < 0 {
+			return 0, false
+		}
+		return uint64(dev), true
+	case int8:
+		if dev < 0 {
+			return 0, false
+		}
+		return uint64(dev), true
+	case int16:
+		if dev < 0 {
+			return 0, false
+		}
+		return uint64(dev), true
+	case int32:
+		if dev < 0 {
+			return 0, false
+		}
+		return uint64(dev), true
+	case int64:
+		if dev < 0 {
+			return 0, false
+		}
+		return uint64(dev), true
+	case uint:
+		return uint64(dev), true
+	case uint8:
+		return uint64(dev), true
+	case uint16:
+		return uint64(dev), true
+	case uint32:
+		return uint64(dev), true
+	case uint64:
+		return dev, true
+	case uintptr:
+		return uint64(dev), true
+	default:
+		return 0, false
+	}
+}
+
+func addSharedExecutableCandidate(search *sharedExecutableSearch, candidate sharedExecutableCandidate) {
+	if dev, ok := fileInfoDeviceID(candidate.info); ok {
+		if search.candidatesByDevice == nil {
+			search.candidatesByDevice = make(map[uint64][]sharedExecutableCandidate)
+		}
+		search.candidatesByDevice[dev] = append(search.candidatesByDevice[dev], candidate)
+		return
+	}
+	search.candidatesFallback = append(search.candidatesFallback, candidate)
+}
+
+func sharedExecutableTargetDevices(paths []string) map[uint64]bool {
+	targetDevices := make(map[uint64]bool)
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if dev, ok := fileInfoDeviceID(info); ok {
+			targetDevices[dev] = true
+		}
+	}
+	return targetDevices
+}
+
+func shouldFullyProbeSearchDir(dir string, targetDevices map[uint64]bool) bool {
+	if len(targetDevices) == 0 {
+		return true
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return true
+	}
+	dev, ok := fileInfoDeviceID(info)
+	if !ok {
+		return true
+	}
+	return targetDevices[dev]
+}
+
+func probeSharedExecutableCandidate(candidatePath string, fullProbe bool, targetDevices map[uint64]bool) (os.FileInfo, bool) {
+	if fullProbe {
+		info, err := os.Stat(candidatePath)
+		if err != nil || info.IsDir() {
+			return nil, false
+		}
+		return info, true
+	}
+
+	info, err := os.Lstat(candidatePath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return nil, false
+	}
+
+	resolvedInfo, err := os.Stat(candidatePath)
+	if err != nil || resolvedInfo.IsDir() {
+		return nil, false
+	}
+	if dev, ok := fileInfoDeviceID(resolvedInfo); ok && len(targetDevices) > 0 && !targetDevices[dev] {
+		return nil, false
+	}
+	return resolvedInfo, true
+}
+
+func (s sharedExecutableSearch) candidatesForTarget(targetInfo os.FileInfo) []sharedExecutableCandidate {
+	if dev, ok := fileInfoDeviceID(targetInfo); ok {
+		bucket := s.candidatesByDevice[dev]
+		if len(s.candidatesFallback) == 0 {
+			return bucket
+		}
+		candidates := make([]sharedExecutableCandidate, 0, len(bucket)+len(s.candidatesFallback))
+		candidates = append(candidates, bucket...)
+		candidates = append(candidates, s.candidatesFallback...)
+		return candidates
+	}
+
+	total := len(s.candidatesFallback)
+	for _, bucket := range s.candidatesByDevice {
+		total += len(bucket)
+	}
+	candidates := make([]sharedExecutableCandidate, 0, total)
+	for _, bucket := range s.candidatesByDevice {
+		candidates = append(candidates, bucket...)
+	}
+	candidates = append(candidates, s.candidatesFallback...)
+	return candidates
+}
+
 func newSharedExecutableSearch(paths []string, probeNames []string) sharedExecutableSearch {
 	candidateNames := sharedExecutableProbeNames(paths, probeNames)
 	if len(candidateNames) == 0 {
 		return sharedExecutableSearch{}
 	}
 
-	var candidates []sharedExecutableCandidate
+	targetDevices := sharedExecutableTargetDevices(paths)
+	search := sharedExecutableSearch{}
 	seenPaths := make(map[string]bool)
 	for _, dir := range executableSearchDirs(paths...) {
+		fullProbe := shouldFullyProbeSearchDir(dir, targetDevices)
 		for _, name := range candidateNames {
 			candidatePath := filepath.Join(dir, name)
 			if seenPaths[candidatePath] {
@@ -485,14 +628,14 @@ func newSharedExecutableSearch(paths []string, probeNames []string) sharedExecut
 			}
 			seenPaths[candidatePath] = true
 
-			info, err := os.Stat(candidatePath)
-			if err != nil || info.IsDir() {
+			info, ok := probeSharedExecutableCandidate(candidatePath, fullProbe, targetDevices)
+			if !ok {
 				continue
 			}
-			candidates = append(candidates, sharedExecutableCandidate{name: name, info: info})
+			addSharedExecutableCandidate(&search, sharedExecutableCandidate{name: name, info: info})
 		}
 	}
-	return sharedExecutableSearch{candidates: candidates}
+	return search
 }
 
 func findSharedExecutableNames(path string, probeNames ...string) (bool, []string) {
@@ -506,7 +649,7 @@ func findSharedExecutableNamesWithSearch(path string, sharedSearch sharedExecuta
 	}
 
 	nameSet := make(map[string]bool)
-	for _, candidate := range sharedSearch.candidates {
+	for _, candidate := range sharedSearch.candidatesForTarget(targetInfo) {
 		if !os.SameFile(targetInfo, candidate.info) {
 			continue
 		}

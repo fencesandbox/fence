@@ -170,6 +170,28 @@ func TestFindSharedExecutableNames_DetectsSharedBinary(t *testing.T) {
 	}
 }
 
+func TestFindSharedExecutableNames_DetectsSymlinkAlias(t *testing.T) {
+	tmpDir := t.TempDir()
+	aPath := filepath.Join(tmpDir, "aaa")
+	linkPath := filepath.Join(tmpDir, "aaa-link")
+
+	// #nosec G306 -- test fixture requires executable permissions
+	if err := os.WriteFile(aPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("failed to create executable: %v", err)
+	}
+	if err := os.Symlink(aPath, linkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	shared, names := findSharedExecutableNames(aPath, "aaa-link")
+	if !shared {
+		t.Fatalf("expected symlink alias to be detected as shared, got names=%v", names)
+	}
+	if !slices.Contains(names, "aaa") || !slices.Contains(names, "aaa-link") {
+		t.Fatalf("expected both executable and symlink alias in shared list, got %v", names)
+	}
+}
+
 func TestFindSharedExecutableNames_OnlyReportsProbedAliases(t *testing.T) {
 	tmpDir := t.TempDir()
 	aPath := filepath.Join(tmpDir, "aaa")
@@ -192,6 +214,45 @@ func TestFindSharedExecutableNames_OnlyReportsProbedAliases(t *testing.T) {
 	}
 	if slices.Contains(names, "ccc") {
 		t.Fatalf("expected unprobed alias ccc to be omitted, got %v", names)
+	}
+}
+
+func TestFindSharedExecutableNamesWithSearch_IgnoresDifferentDeviceBuckets(t *testing.T) {
+	tmpDir := t.TempDir()
+	aPath := filepath.Join(tmpDir, "aaa")
+	bPath := filepath.Join(tmpDir, "bbb")
+
+	// #nosec G306 -- test fixture requires executable permissions
+	if err := os.WriteFile(aPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("failed to create executable: %v", err)
+	}
+	if err := os.Link(aPath, bPath); err != nil {
+		t.Fatalf("failed to create hard link: %v", err)
+	}
+
+	info, err := os.Stat(aPath)
+	if err != nil {
+		t.Fatalf("failed to stat executable: %v", err)
+	}
+	dev, ok := fileInfoDeviceID(info)
+	if !ok {
+		t.Skip("device IDs unavailable on this platform")
+	}
+
+	shared, names := findSharedExecutableNamesWithSearch(aPath, sharedExecutableSearch{
+		candidatesByDevice: map[uint64][]sharedExecutableCandidate{
+			dev:     {{name: "aaa", info: info}, {name: "bbb", info: info}},
+			dev + 1: {{name: "wrong-device", info: info}},
+		},
+	})
+	if !shared {
+		t.Fatalf("expected matching-device bucket to be detected as shared, got names=%v", names)
+	}
+	if slices.Contains(names, "wrong-device") {
+		t.Fatalf("expected different-device bucket to be ignored, got %v", names)
+	}
+	if !slices.Contains(names, "bbb") {
+		t.Fatalf("expected matching-device candidate to remain visible, got %v", names)
 	}
 }
 
