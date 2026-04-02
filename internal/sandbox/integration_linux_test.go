@@ -426,6 +426,52 @@ func TestLinux_DenyReadTakesPrecedenceOverMandatoryDangerousPath(t *testing.T) {
 	assertBlocked(t, result)
 }
 
+// TestLinux_DenyReadTakesPrecedenceOverSamePathDenyWrite verifies that masking a
+// directory still wins when the same directory also appears in denyWrite.
+func TestLinux_DenyReadTakesPrecedenceOverSamePathDenyWrite(t *testing.T) {
+	skipIfAlreadySandboxed(t)
+
+	workspace := createTempWorkspace(t)
+	fakeHome := createTempWorkspace(t)
+	t.Setenv("HOME", fakeHome)
+
+	sshDir := filepath.Join(fakeHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+	keyPath := createTestFile(t, sshDir, "id_rsa", "secret key")
+
+	cfg := testConfigWithWorkspace(workspace)
+	cfg.Filesystem.DenyRead = []string{"~/.ssh"}
+	cfg.Filesystem.DenyWrite = []string{"~/.ssh"}
+
+	result := runUnderLinuxSandboxDirect(t, cfg, "cat "+keyPath, workspace)
+	assertBlocked(t, result)
+}
+
+// TestLinux_DenyReadMaskedAncestorBeatsChildDenyWrite verifies that a later
+// denyWrite self-bind cannot puncture a directory already masked by denyRead.
+func TestLinux_DenyReadMaskedAncestorBeatsChildDenyWrite(t *testing.T) {
+	skipIfAlreadySandboxed(t)
+
+	workspace := createTempWorkspace(t)
+	fakeHome := createTempWorkspace(t)
+	t.Setenv("HOME", fakeHome)
+
+	sshDir := filepath.Join(fakeHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+	keyPath := createTestFile(t, sshDir, "id_rsa", "secret key")
+
+	cfg := testConfigWithWorkspace(workspace)
+	cfg.Filesystem.DenyRead = []string{"~/.ssh"}
+	cfg.Filesystem.DenyWrite = []string{"~/.ssh/id_rsa"}
+
+	result := runUnderLinuxSandboxDirect(t, cfg, "cat "+keyPath, workspace)
+	assertBlocked(t, result)
+}
+
 // ============================================================================
 // Network Blocking Tests
 // ============================================================================

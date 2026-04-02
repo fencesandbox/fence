@@ -280,17 +280,7 @@ func isSymlink(path string) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-// canMountOver returns true if bwrap can safely mount over this path.
-// Returns false for symlinks (target may not exist in sandbox) and
-// other special cases that could cause mount failures.
-func canMountOver(path string) bool {
-	if isSymlink(path) {
-		return false
-	}
-	return fileExists(path)
-}
-
-// resolvePathForMount canonicalizes a path before a self-bind mount.
+// resolvePathForMount canonicalizes a path before mounting over it.
 // bubblewrap can fail when destination paths include symlink components
 // (common on usr-merged distros, e.g. /bin -> /usr/bin), so always prefer the
 // fully-resolved path.
@@ -1065,116 +1055,7 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 		}
 	}
 
-	// Track explicit denyRead paths so they always keep precedence over
-	// mandatory dangerous-path write protection.
-	denyReadPaths := make(map[string]bool)
-
-	// Handle denyRead paths - hide them
-	// For directories: use --tmpfs to replace with empty tmpfs
-	// For files: use --ro-bind /dev/null to mask with empty file
-	// Skip symlinks: they may point outside the sandbox and cause mount errors
-	if cfg != nil && cfg.Filesystem.DenyRead != nil {
-		expandedDenyRead := ExpandGlobPatterns(cfg.Filesystem.DenyRead)
-		for _, p := range expandedDenyRead {
-			denyReadPaths[p] = true
-			if canMountOver(p) {
-				if isDirectory(p) {
-					bwrapArgs = append(bwrapArgs, "--tmpfs", p)
-				} else {
-					// Mask file with /dev/null (appears as empty, unreadable)
-					bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", p)
-				}
-			}
-		}
-
-		// Add non-glob paths
-		for _, p := range cfg.Filesystem.DenyRead {
-			normalized := NormalizePath(p)
-			if !ContainsGlobChars(normalized) {
-				denyReadPaths[normalized] = true
-			}
-			if !ContainsGlobChars(normalized) && canMountOver(normalized) {
-				if isDirectory(normalized) {
-					bwrapArgs = append(bwrapArgs, "--tmpfs", normalized)
-				} else {
-					bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", normalized)
-				}
-			}
-		}
-	}
-
-	// Apply mandatory dangerous-path write protection.
-	// In defaultDenyRead mode, never rebind the real path because that would
-	// make hidden files readable; mask with /dev/null or empty tmpfs instead.
-	//
-	// getMandatoryDenyPaths covers: cwd-level files, home dir files, and a
-	// depth-limited walk (DefaultMaxDangerousFileDepth levels) to find dangerous
-	// files in subdirectories without full tree walks that hang on large dirs.
-	allowGitConfig := cfg != nil && cfg.Filesystem.AllowGitConfig
-	mandatoryDeny := getMandatoryDenyPaths(cwd, allowGitConfig)
-
-	// Deduplicate
-	seen := make(map[string]bool)
-	for _, p := range mandatoryDeny {
-		if denyReadPaths[p] {
-			// Respect explicit denyRead precedence.
-			continue
-		}
-		mountPath, ok := resolvePathForMount(p)
-		if !ok || denyReadPaths[mountPath] {
-			continue
-		}
-		if !seen[mountPath] {
-			seen[mountPath] = true
-			seen[p] = true
-			if defaultDenyRead {
-				if isDirectory(mountPath) {
-					bwrapArgs = append(bwrapArgs, "--tmpfs", mountPath)
-				} else {
-					bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", mountPath)
-				}
-			} else {
-				bwrapArgs = append(bwrapArgs, "--ro-bind", mountPath, mountPath)
-			}
-		}
-	}
-
-	// Handle explicit denyWrite paths (make them read-only)
-	if cfg != nil && cfg.Filesystem.DenyWrite != nil {
-		expandedDenyWrite := ExpandGlobPatterns(cfg.Filesystem.DenyWrite)
-		for _, p := range expandedDenyWrite {
-			if fileExists(p) && !seen[p] {
-				seen[p] = true
-				bwrapArgs = append(bwrapArgs, "--ro-bind", p, p)
-			}
-		}
-		// Add non-glob paths
-		for _, p := range cfg.Filesystem.DenyWrite {
-			normalized := NormalizePath(p)
-			if !ContainsGlobChars(normalized) && fileExists(normalized) && !seen[normalized] {
-				seen[normalized] = true
-				bwrapArgs = append(bwrapArgs, "--ro-bind", normalized, normalized)
-			}
-		}
-	}
-
-	// Runtime executable deny (applies to child processes).
-	// This masks resolved executable paths so execve fails even when launched
-	// from an allowed wrapper process (e.g., agent subprocesses).
-	for _, p := range deniedExecPaths {
-		mountPath, ok := resolvePathForMount(p)
-		if !ok {
-			if opts.Debug {
-				fmt.Fprintf(os.Stderr, "[fence:linux] Skipping runtime exec deny mount for %s (unmountable)\n", p)
-			}
-			continue
-		}
-		if !seen[mountPath] {
-			seen[mountPath] = true
-			seen[p] = true
-			bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", mountPath)
-		}
-	}
+	bwrapArgs = appendLinuxLatePolicyMounts(bwrapArgs, cfg, cwd, defaultDenyRead, deniedExecPaths, opts.Debug)
 
 	// Bind the outbound Unix sockets into the sandbox (need to be writable)
 	if bridge != nil {

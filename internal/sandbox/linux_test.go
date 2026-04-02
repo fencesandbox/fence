@@ -432,3 +432,166 @@ func TestWrapCommandLinuxWithOptions_RootBindPrecedesSpecialMounts(t *testing.T)
 		t.Fatalf("expected root bind to appear before device passthroughs: %s", cmd)
 	}
 }
+
+func TestLinuxLateMountPlanner_MaskedAncestorWinsOverChildReadOnly(t *testing.T) {
+	planner := newLinuxLateMountPlanner()
+	planner.Add("/tmp/secret", linuxLateMountMaskDir)
+	planner.Add("/tmp/secret/id_rsa", linuxLateMountReadOnly)
+
+	mounts := planner.Mounts()
+	if len(mounts) != 1 {
+		t.Fatalf("expected a single mount, got %#v", mounts)
+	}
+	if mounts[0].Path != "/tmp/secret" || mounts[0].Kind != linuxLateMountMaskDir {
+		t.Fatalf("expected masked ancestor to win, got %#v", mounts)
+	}
+}
+
+func TestLinuxLateMountPlanner_ReadOnlyAncestorKeepsChildMask(t *testing.T) {
+	planner := newLinuxLateMountPlanner()
+	planner.Add("/tmp/tools", linuxLateMountReadOnly)
+	planner.Add("/tmp/tools/python3", linuxLateMountMaskFile)
+
+	mounts := planner.Mounts()
+	if len(mounts) != 2 {
+		t.Fatalf("expected parent read-only mount and child mask, got %#v", mounts)
+	}
+	if mounts[0].Path != "/tmp/tools" || mounts[0].Kind != linuxLateMountReadOnly {
+		t.Fatalf("expected read-only parent mount first, got %#v", mounts)
+	}
+	if mounts[1].Path != "/tmp/tools/python3" || mounts[1].Kind != linuxLateMountMaskFile {
+		t.Fatalf("expected child mask to remain after parent read-only mount, got %#v", mounts)
+	}
+}
+
+func TestLinuxLateMountPlanner_ReadOnlyAncestorPrunesChildReadOnly(t *testing.T) {
+	planner := newLinuxLateMountPlanner()
+	planner.Add("/tmp/secret/id_rsa", linuxLateMountReadOnly)
+	planner.Add("/tmp/secret", linuxLateMountReadOnly)
+
+	mounts := planner.Mounts()
+	if len(mounts) != 1 {
+		t.Fatalf("expected redundant child read-only mount to be removed, got %#v", mounts)
+	}
+	if mounts[0].Path != "/tmp/secret" || mounts[0].Kind != linuxLateMountReadOnly {
+		t.Fatalf("expected parent read-only mount to remain, got %#v", mounts)
+	}
+}
+
+func TestWrapCommandLinuxWithOptions_DenyReadDirectoryWinsOverSamePathDenyWrite(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not available")
+	}
+
+	workspace := t.TempDir()
+	secretDir := filepath.Join(workspace, "secret")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("failed to create secret dir: %v", err)
+	}
+
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DenyRead:  []string{secretDir},
+			DenyWrite: []string{secretDir},
+		},
+	}
+
+	cmd, err := WrapCommandLinuxWithOptions(cfg, "echo ok", nil, nil, LinuxSandboxOptions{
+		UseLandlock: false,
+		UseSeccomp:  false,
+		UseEBPF:     false,
+		ShellMode:   ShellModeDefault,
+	})
+	if err != nil {
+		t.Fatalf("WrapCommandLinuxWithOptions failed: %v", err)
+	}
+
+	maskFragment := ShellQuote([]string{"--tmpfs", secretDir})
+	rebindFragment := ShellQuote([]string{"--ro-bind", secretDir, secretDir})
+	if !strings.Contains(cmd, maskFragment) {
+		t.Fatalf("expected denyRead directory mask in command: %s", cmd)
+	}
+	if strings.Contains(cmd, rebindFragment) {
+		t.Fatalf("did not expect denyWrite to rebind a masked directory: %s", cmd)
+	}
+}
+
+func TestWrapCommandLinuxWithOptions_DenyReadDirectoryWinsOverChildDenyWrite(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not available")
+	}
+
+	workspace := t.TempDir()
+	secretDir := filepath.Join(workspace, "secret")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("failed to create secret dir: %v", err)
+	}
+	secretFile := filepath.Join(secretDir, "id_rsa")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("failed to create secret file: %v", err)
+	}
+
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DenyRead:  []string{secretDir},
+			DenyWrite: []string{secretFile},
+		},
+	}
+
+	cmd, err := WrapCommandLinuxWithOptions(cfg, "echo ok", nil, nil, LinuxSandboxOptions{
+		UseLandlock: false,
+		UseSeccomp:  false,
+		UseEBPF:     false,
+		ShellMode:   ShellModeDefault,
+	})
+	if err != nil {
+		t.Fatalf("WrapCommandLinuxWithOptions failed: %v", err)
+	}
+
+	maskFragment := ShellQuote([]string{"--tmpfs", secretDir})
+	rebindFragment := ShellQuote([]string{"--ro-bind", secretFile, secretFile})
+	if !strings.Contains(cmd, maskFragment) {
+		t.Fatalf("expected denyRead directory mask in command: %s", cmd)
+	}
+	if strings.Contains(cmd, rebindFragment) {
+		t.Fatalf("did not expect denyWrite child rebind under a masked directory: %s", cmd)
+	}
+}
+
+func TestWrapCommandLinuxWithOptions_DenyReadFileWinsOverSamePathDenyWrite(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not available")
+	}
+
+	workspace := t.TempDir()
+	secretFile := filepath.Join(workspace, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("failed to create secret file: %v", err)
+	}
+
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DenyRead:  []string{secretFile},
+			DenyWrite: []string{secretFile},
+		},
+	}
+
+	cmd, err := WrapCommandLinuxWithOptions(cfg, "echo ok", nil, nil, LinuxSandboxOptions{
+		UseLandlock: false,
+		UseSeccomp:  false,
+		UseEBPF:     false,
+		ShellMode:   ShellModeDefault,
+	})
+	if err != nil {
+		t.Fatalf("WrapCommandLinuxWithOptions failed: %v", err)
+	}
+
+	maskFragment := ShellQuote([]string{"--ro-bind", "/dev/null", secretFile})
+	rebindFragment := ShellQuote([]string{"--ro-bind", secretFile, secretFile})
+	if !strings.Contains(cmd, maskFragment) {
+		t.Fatalf("expected denyRead file mask in command: %s", cmd)
+	}
+	if strings.Contains(cmd, rebindFragment) {
+		t.Fatalf("did not expect denyWrite to rebind a masked file: %s", cmd)
+	}
+}
