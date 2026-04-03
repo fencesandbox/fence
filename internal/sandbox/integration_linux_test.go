@@ -814,7 +814,6 @@ func TestLinux_PTYAllocationWorksInDirectSandbox(t *testing.T) {
 
 func TestLinux_DefaultCrossMountToolchainPathsRemainVisible(t *testing.T) {
 	skipIfAlreadySandboxed(t)
-	skipIfCommandNotFound(t, "python3")
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
