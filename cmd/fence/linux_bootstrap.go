@@ -76,14 +76,17 @@ func startBridgesAndSetEnv(ctx context.Context, opts bootstrapOptions) []string 
 
 	if opts.httpSocket != "" {
 		socketPaths = append(socketPaths, opts.httpSocket)
-		startErrCh := make(chan error, 1)
+		startErrCh := make(chan struct {
+			port int
+			err  error
+		}, 1)
 		go func() {
-			if err := bridgeTCPToUnix(ctx, 3128, opts.httpSocket, startErrCh); err != nil && err != context.Canceled {
+			if _, err := bridgeTCPToUnix(ctx, 3128, opts.httpSocket, startErrCh); err != nil && err != context.Canceled {
 				fmt.Fprintf(os.Stderr, "[fence:linux-bootstrap] HTTP bridge error: %v\n", err)
 			}
 		}()
-		if err := <-startErrCh; err != nil {
-			fatal(ExitWrapperSetupFailed, "failed to start HTTP bridge: %v", err)
+		if result := <-startErrCh; result.err != nil {
+			fatal(ExitWrapperSetupFailed, "failed to start HTTP bridge: %v", result.err)
 		}
 		if err := os.Setenv("HTTP_PROXY", "http://127.0.0.1:3128"); err != nil {
 			fatal(ExitWrapperSetupFailed, "failed to set HTTP_PROXY: %v", err)
@@ -101,14 +104,17 @@ func startBridgesAndSetEnv(ctx context.Context, opts bootstrapOptions) []string 
 
 	if opts.socksSocket != "" {
 		socketPaths = append(socketPaths, opts.socksSocket)
-		startErrCh := make(chan error, 1)
+		startErrCh := make(chan struct {
+			port int
+			err  error
+		}, 1)
 		go func() {
-			if err := bridgeTCPToUnix(ctx, 1080, opts.socksSocket, startErrCh); err != nil && err != context.Canceled {
+			if _, err := bridgeTCPToUnix(ctx, 1080, opts.socksSocket, startErrCh); err != nil && err != context.Canceled {
 				fmt.Fprintf(os.Stderr, "[fence:linux-bootstrap] SOCKS bridge error: %v\n", err)
 			}
 		}()
-		if err := <-startErrCh; err != nil {
-			fatal(ExitWrapperSetupFailed, "failed to start SOCKS bridge: %v", err)
+		if result := <-startErrCh; result.err != nil {
+			fatal(ExitWrapperSetupFailed, "failed to start SOCKS bridge: %v", result.err)
 		}
 		if err := os.Setenv("ALL_PROXY", "socks5h://127.0.0.1:1080"); err != nil {
 			fatal(ExitWrapperSetupFailed, "failed to set ALL_PROXY: %v", err)
@@ -121,7 +127,7 @@ func startBridgesAndSetEnv(ctx context.Context, opts bootstrapOptions) []string 
 	for _, rb := range opts.reverseBridges {
 		socketPaths = append(socketPaths, rb.socketPath)
 		go func(port int, socketPath string) {
-			if err := bridgeUnixToTCP(ctx, socketPath, port); err != nil && err != context.Canceled {
+			if _, err := bridgeUnixToTCP(ctx, socketPath, port); err != nil && err != context.Canceled {
 				fmt.Fprintf(os.Stderr, "[fence:linux-bootstrap] Reverse bridge error: %v\n", err)
 			}
 		}(rb.port, rb.socketPath)
@@ -280,9 +286,12 @@ func loadConfigFromEnv() (*config.Config, error) {
 
 // bridgeTCPToUnix bridges TCP connections on a port to a Unix socket.
 // This is used for proxy support (HTTP/SOCKS proxies).
-// startErrCh receives nil once the listener is ready, or an error if setup
-// fails; it is always sent to exactly once before the function returns.
-func bridgeTCPToUnix(ctx context.Context, listenPort int, unixSocketPath string, startErrCh chan<- error) error {
+// startErrCh receives the actual port and nil once the listener is ready,
+// or -1 and an error if setup fails; it is always sent to exactly once before the function returns.
+func bridgeTCPToUnix(ctx context.Context, listenPort int, unixSocketPath string, startErrCh chan<- struct {
+	port int
+	err  error
+}) (int, error) {
 	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			var setsockoptErr error
@@ -297,12 +306,22 @@ func bridgeTCPToUnix(ctx context.Context, listenPort int, unixSocketPath string,
 		},
 	}
 
-	ln, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	listenAddr := fmt.Sprintf("127.0.0.1:%d", listenPort)
+	ln, err := lc.Listen(ctx, "tcp", listenAddr)
 	if err != nil {
-		startErrCh <- fmt.Errorf("failed to listen on port %d: %w", listenPort, err)
-		return fmt.Errorf("failed to listen on port %d: %w", listenPort, err)
+		startErrCh <- struct {
+			port int
+			err  error
+		}{-1, fmt.Errorf("failed to listen on %s: %w", listenAddr, err)}
+		return -1, fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
 	}
-	startErrCh <- nil
+
+	// Get the actual port (important when listenPort is 0)
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+	startErrCh <- struct {
+		port int
+		err  error
+	}{actualPort, nil}
 
 	// Close listener when context is cancelled
 	go func() {
@@ -313,7 +332,7 @@ func bridgeTCPToUnix(ctx context.Context, listenPort int, unixSocketPath string,
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return actualPort, ctx.Err()
 		default:
 		}
 
@@ -322,9 +341,9 @@ func bridgeTCPToUnix(ctx context.Context, listenPort int, unixSocketPath string,
 			// Check if context was cancelled
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return actualPort, ctx.Err()
 			default:
-				return fmt.Errorf("accept error: %w", err)
+				return actualPort, fmt.Errorf("accept error: %w", err)
 			}
 		}
 
@@ -360,7 +379,7 @@ func handleTCPToUnixConnection(tcpConn net.Conn, unixPath string) {
 
 // bridgeUnixToTCP bridges a Unix socket to a TCP port (reverse bridge)
 // This is used for exposing ports from inside the sandbox
-func bridgeUnixToTCP(ctx context.Context, unixSocketPath string, targetPort int) error {
+func bridgeUnixToTCP(ctx context.Context, unixSocketPath string, targetPort int) (int, error) {
 	// Remove socket if it already exists
 	_ = os.Remove(unixSocketPath)
 
@@ -368,7 +387,7 @@ func bridgeUnixToTCP(ctx context.Context, unixSocketPath string, targetPort int)
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(ctx, "unix", unixSocketPath)
 	if err != nil {
-		return fmt.Errorf("failed to listen on unix socket %s: %w", unixSocketPath, err)
+		return -1, fmt.Errorf("failed to listen on unix socket %s: %w", unixSocketPath, err)
 	}
 
 	// Close listener when context is cancelled
@@ -381,7 +400,7 @@ func bridgeUnixToTCP(ctx context.Context, unixSocketPath string, targetPort int)
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return targetPort, ctx.Err()
 		default:
 		}
 
@@ -390,9 +409,9 @@ func bridgeUnixToTCP(ctx context.Context, unixSocketPath string, targetPort int)
 			// Check if context was cancelled
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return targetPort, ctx.Err()
 			default:
-				return fmt.Errorf("accept error: %w", err)
+				return targetPort, fmt.Errorf("accept error: %w", err)
 			}
 		}
 
