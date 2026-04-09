@@ -64,10 +64,7 @@ In `argv` mode, Fence uses a small two-part architecture:
 1. A sandbox-side shim installs a seccomp user-notification filter for `execve` and `execveat`
 2. A host-side Fence supervisor receives notifications, reconstructs the candidate exec path + argv, and decides allow or deny
 
-This allows rules like:
-
-- Deny `git log` for child processes without blocking all `git` execs
-- Deny `git push` while still allowing `git status`
+This allows rules like denying `git push` without blocking all `git` execs.
 
 Requirements:
 

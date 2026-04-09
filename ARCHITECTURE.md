@@ -27,7 +27,7 @@ flowchart TB
         Policy["Policy Model<br/>(network, fs, devices,<br/>command, ssh, pty)"]
         Manager["Manager"]
         Checks["Preflight Checks<br/>(command + ssh)"]
-        Runtime["Runtime Setup<br/>(proxies, bridges,<br/>shell, exec deny)"]
+        Runtime["Runtime Setup<br/>(proxies, bridges,<br/>shell, runtime exec policy)"]
         Env["Env Sanitization"]
         Sandbox["Platform Sandbox<br/>(macOS/Linux)"]
         Monitor["Violation Monitoring"]
@@ -51,7 +51,7 @@ flowchart TB
 ```text
 fence/
 ├── cmd/fence/                  # CLI entry point and runtime helpers
-│   ├── main.go                 # Main CLI, config/import/completion commands
+│   ├── main.go                 # Main CLI, config/import/completion commands, internal helper modes
 │   ├── pty_runtime_linux.go    # Linux PTY + signal relay for interactive sessions
 │   └── pty_runtime_stub.go     # Non-Linux PTY stub
 ├── internal/                   # Private implementation
@@ -64,7 +64,10 @@ fence/
 │   └── sandbox/                # Policy enforcement and platform-specific wrapping
 │       ├── manager.go          # Owns proxies, bridges, shell options, cleanup
 │       ├── command.go          # Command parsing, deny/allow rules, SSH policy
-│       ├── runtime_exec_deny.go # Exec-time blocking for selected denied executables
+│       ├── runtime_exec_deny.go # Path-based exec-time blocking for selected denied executables
+│       ├── runtime_exec_policy.go # Runtime exec policy selection helpers
+│       ├── runtime_exec_argv_linux.go # Linux argv-aware runtime exec supervisor + shim
+│       ├── runtime_exec_argv_stub.go # Non-Linux stub for argv-aware runtime exec
 │       ├── sanitize.go         # Environment sanitization
 │       ├── dangerous.go        # Mandatory dangerous file/directory protection
 │       ├── shell.go            # Shell quoting helpers
@@ -88,8 +91,8 @@ fence/
 Fence can run as either a standalone CLI or an embeddable Go library.
 
 - `cmd/fence/main.go` handles the main execution flow plus `config init`,
-  `import`, `completion`, `--linux-features`, and the internal
-  `--landlock-apply` wrapper mode.
+  `import`, `completion`, `--linux-features`, and the internal helper modes
+  `--landlock-apply`, `--linux-argv-exec-run`, and `--linux-argv-exec-shim`.
 - `pkg/fence` exposes config load/resolve/merge helpers and the sandbox manager
   lifecycle so other Go programs can embed Fence directly.
 
@@ -168,9 +171,13 @@ type Config struct {
 - SSH is a first-class policy surface. Fence can separately enforce
   `ssh.allowedHosts`, `ssh.deniedHosts`, `ssh.allowedCommands`,
   `ssh.deniedCommands`, `ssh.allowAllCommands`, and `ssh.inheritDeny`.
-- Some single-token denied executables are also blocked at runtime by denying
-  the resolved binary path inside the sandbox. This prevents wrapper processes
-  from launching denied child executables after the initial preflight check.
+- Runtime child-process exec enforcement has two modes:
+  - `runtimeExecPolicy: "path"` (default) bind-masks selected executables by
+    resolved path. This is used for single-token deny entries and prevents
+    allowed wrapper processes from launching denied child executables later.
+  - `runtimeExecPolicy: "argv"` (Linux-only) uses seccomp user notification to
+    inspect the actual `execve` / `execveat` path + argv before allowing or
+    denying the child exec.
 
 #### Devices And Interactive Execution
 
@@ -268,7 +275,10 @@ Seatbelt profiles are generated per command and encode:
 ### Linux Implementation (`linux.go`)
 
 Fence uses `bubblewrap` with network namespace isolation when the environment
-supports it and the current policy needs forced proxy routing.
+supports it and the current policy needs forced proxy routing. Linux runtime
+exec enforcement then branches based on `command.runtimeExecPolicy`: either
+path-based bind masking (`path`) or Linux-only argv-aware seccomp supervision
+(`argv`).
 
 ```mermaid
 flowchart TB
@@ -317,9 +327,21 @@ Linux enforcement also layers in:
 - Bind-mount allow/deny logic, explicit masking of denied paths, and mandatory
   dangerous-path protection
 - Device shaping via `devices.mode`
-- Runtime executable denial by bind-masking selected binaries
+- Runtime exec policy:
+  - `path`: bind-mask selected executables
+  - `argv`: use a host-side Fence supervisor plus a sandbox-side shim that
+    installs a seccomp user-notification filter for `execve` / `execveat`
 - Optional Landlock re-exec via the internal `--landlock-apply` wrapper
 - Optional seccomp and eBPF monitoring
+
+In `argv` mode, the Linux path adds a small helper pipeline:
+
+1. `fence --linux-argv-exec-run` runs on the host and supervises exec
+   notifications
+2. `fence --linux-argv-exec-shim` runs inside the sandbox, installs the
+   `SECCOMP_RET_USER_NOTIF` filter, and then `exec()`s the user command
+3. The host-side supervisor reconstructs the candidate exec path and argv from
+   the tracee and applies the resolved command policy
 
 If the environment does not support network namespaces (common in some
 containers/CI setups), Fence can still configure proxies and filesystem policy,
@@ -381,9 +403,9 @@ flowchart TD
     F1 -->|allowed| G["7. Build platform wrapper"]
 
     G --> G1["[macOS] Generate Seatbelt profile"]
-    G --> G2["[Linux] Generate bwrap command<br/>+ optional Landlock wrapper"]
+    G --> G2["[Linux] Generate bwrap command<br/>+ optional Landlock / argv-runtime helpers"]
 
-    G1 & G2 --> H["8. Compute runtime exec denies<br/>and apply fs/device/network policy"]
+    G1 & G2 --> H["8. Compute runtime exec policy<br/>and apply fs/device/network policy"]
     H --> I["9. Sanitize environment<br/>(strip LD_*/DYLD_*)"]
     I --> J["10. Execute command"]
     J --> K["11. Monitor violations (optional)"]
@@ -400,7 +422,8 @@ flowchart TD
 | Proxy routing | Environment variables | `socat` bridges + environment variables |
 | Filesystem control | Seatbelt read/write/exec rules | Bind mounts + deny masking + optional Landlock |
 | Device control | N/A | `devices.mode` + optional `/dev/...` passthrough |
-| Runtime exec deny | `deny process-exec` rules | Bind-mask selected executables |
+| Runtime exec deny | `deny process-exec` rules | Bind-mask selected executables or argv-aware seccomp supervision |
+| Child exec argv-aware policy | No practical unprivileged hook | Yes (`runtimeExecPolicy: "argv"`, opt-in) |
 | Interactive PTY | Optional `pseudo-tty` permission | Optional PTY + CLI signal/resize relay |
 | Inbound connections | Local bind rules | Reverse `socat` bridges when using isolated netns |
 | Violation monitoring | `log stream` + proxy | eBPF + proxy |
@@ -412,7 +435,7 @@ flowchart TD
 On Linux, Fence uses multiple security layers with graceful fallback:
 
 1. `bubblewrap` (core isolation via Linux namespaces and mounts)
-2. `seccomp` (syscall filtering)
+2. `seccomp` (syscall filtering plus optional argv-aware exec supervision)
 3. `Landlock` (filesystem access control)
 4. `eBPF` monitoring (violation visibility)
 
@@ -422,7 +445,9 @@ is available and wrapper generation adapts to those capabilities.
 > [!NOTE]
 > Seccomp blocks syscalls silently (no logging). With `-m` and root/CAP_BPF,
 > the eBPF monitor catches these failures by tracing syscall exits that return
-> `EPERM` / `EACCES`.
+> `EPERM` / `EACCES`. In Linux `argv` runtime-exec mode, denied child execs are
+> reported directly by the host-side Fence supervisor rather than through the
+> generic seccomp logging path.
 
 See [Linux Security Features](./docs/linux-security-features.md) for details.
 
