@@ -48,19 +48,21 @@ func checkSingleCommand(command string, cfg *config.Config) error {
 		return nil
 	}
 
-	// Normalize the command for matching
-	normalized := normalizeCommand(command)
+	actualTokens := normalizeCommandTokens(command)
+	if len(actualTokens) == 0 {
+		return nil
+	}
 
 	// Check if explicitly allowed (takes precedence over deny)
 	for _, allow := range cfg.Command.Allow {
-		if matchesPrefix(normalized, allow) {
+		if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(allow)) {
 			return nil
 		}
 	}
 
 	// Check user-defined deny list
 	for _, deny := range cfg.Command.Deny {
-		if matchesPrefix(normalized, deny) {
+		if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(deny)) {
 			return &CommandBlockedError{
 				Command:       command,
 				BlockedPrefix: deny,
@@ -72,7 +74,7 @@ func checkSingleCommand(command string, cfg *config.Config) error {
 	// Check default deny list (if enabled)
 	if cfg.Command.UseDefaultDeniedCommands() {
 		for _, deny := range config.DefaultDeniedCommands {
-			if matchesPrefix(normalized, deny) {
+			if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(deny)) {
 				return &CommandBlockedError{
 					Command:       command,
 					BlockedPrefix: deny,
@@ -267,46 +269,111 @@ func tokenizeCommand(command string) []string {
 // - Strips leading path from the command (e.g., /usr/bin/git -> git)
 // - Collapses multiple spaces
 func normalizeCommand(command string) string {
+	tokens := normalizeCommandTokens(command)
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	return strings.Join(tokens, " ")
+}
+
+func normalizeCommandTokens(command string) []string {
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return ""
+		return nil
 	}
 
 	tokens := tokenizeCommand(command)
 	if len(tokens) == 0 {
-		return command
+		return nil
 	}
 
 	tokens[0] = filepath.Base(tokens[0])
-
-	return strings.Join(tokens, " ")
+	return tokens
 }
 
 // matchesPrefix checks if a command matches a blocked prefix.
 // The prefix matches if the command starts with the prefix followed by
 // end of string, a space, or other argument.
 func matchesPrefix(command, prefix string) bool {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" {
+	return matchesTokenizedCommandRule(normalizeCommandTokens(command), normalizeCommandTokens(prefix))
+}
+
+// matchesTokenizedCommandRule applies Fence's command-prefix semantics to
+// normalized token slices.
+//
+// Semantics:
+//   - The executable token is always matched positionally.
+//   - Tokens ending in "=" act as presence checks that may appear later in the
+//     remaining argv.
+//   - Before the first subcommand-like rule token, leading actual argv flags are
+//     skipped so rules like "docker run --privileged" still match
+//     "docker --debug run --privileged".
+//   - Other tokens remain positional.
+func matchesTokenizedCommandRule(actualTokens, ruleTokens []string) bool {
+	if len(actualTokens) == 0 || len(ruleTokens) == 0 || len(actualTokens) < len(ruleTokens) {
+		return false
+	}
+	if actualTokens[0] != ruleTokens[0] {
 		return false
 	}
 
-	prefix = normalizeCommand(prefix)
+	positionalIndex := 1
+	allowLeadingGlobalFlags := true
+	for _, want := range ruleTokens[1:] {
+		if strings.HasSuffix(want, "=") {
+			matched := false
+			for _, got := range actualTokens[positionalIndex:] {
+				if strings.HasPrefix(got, want) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+			continue
+		}
 
-	if command == prefix {
-		return true
+		if allowLeadingGlobalFlags && isSubcommandLikeRuleToken(want) {
+			positionalIndex = skipLeadingGlobalFlagTokens(actualTokens, positionalIndex, want)
+			allowLeadingGlobalFlags = false
+		}
+
+		if positionalIndex >= len(actualTokens) || actualTokens[positionalIndex] != want {
+			return false
+		}
+		positionalIndex++
 	}
 
-	if strings.HasPrefix(command, prefix+" ") {
-		return true
+	return true
+}
+
+func isSubcommandLikeRuleToken(token string) bool {
+	return token != "" && token != "--" && !strings.HasPrefix(token, "-") && !strings.HasSuffix(token, "=")
+}
+
+func skipLeadingGlobalFlagTokens(actualTokens []string, positionalIndex int, firstSubcommandToken string) int {
+	for positionalIndex < len(actualTokens) {
+		token := actualTokens[positionalIndex]
+		if token == "--" || !strings.HasPrefix(token, "-") {
+			return positionalIndex
+		}
+
+		positionalIndex++
+
+		// Long options commonly accept a separate value. If the next token is a
+		// non-flag and is not the subcommand we're trying to match, treat it as
+		// an option value and continue scanning for the first subcommand token.
+		if strings.HasPrefix(token, "--") && !strings.Contains(token, "=") && positionalIndex < len(actualTokens) {
+			next := actualTokens[positionalIndex]
+			if next != "--" && !strings.HasPrefix(next, "-") && next != firstSubcommandToken {
+				positionalIndex++
+			}
+		}
 	}
 
-	// Also match prefixes that end with = (e.g., "dd if=" matches "dd if=/dev/zero")
-	if strings.HasSuffix(prefix, "=") && strings.HasPrefix(command, prefix) {
-		return true
-	}
-
-	return false
+	return positionalIndex
 }
 
 // SSHBlockedError is returned when an SSH command is blocked by policy.
@@ -394,8 +461,8 @@ func checkSSHRemoteCommand(remoteCmd string, cfg *config.Config) error {
 
 // checkSSHSingleCommand checks a single SSH remote command against policy.
 func checkSSHSingleCommand(subCmd, fullRemoteCmd string, cfg *config.Config) error {
-	normalized := normalizeCommand(subCmd)
-	if normalized == "" {
+	actualTokens := normalizeCommandTokens(subCmd)
+	if len(actualTokens) == 0 {
 		return nil
 	}
 
@@ -403,7 +470,7 @@ func checkSSHSingleCommand(subCmd, fullRemoteCmd string, cfg *config.Config) err
 	// User-defined global then default deny list
 	if cfg.SSH.InheritDeny {
 		for _, deny := range cfg.Command.Deny {
-			if matchesPrefix(normalized, deny) {
+			if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(deny)) {
 				return &SSHBlockedError{
 					RemoteCommand: fullRemoteCmd,
 					Reason:        fmt.Sprintf("command %q matches inherited global deny %q", subCmd, deny),
@@ -413,7 +480,7 @@ func checkSSHSingleCommand(subCmd, fullRemoteCmd string, cfg *config.Config) err
 
 		if cfg.Command.UseDefaultDeniedCommands() {
 			for _, deny := range config.DefaultDeniedCommands {
-				if matchesPrefix(normalized, deny) {
+				if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(deny)) {
 					return &SSHBlockedError{
 						RemoteCommand: fullRemoteCmd,
 						Reason:        fmt.Sprintf("command %q matches inherited default deny %q", subCmd, deny),
@@ -425,7 +492,7 @@ func checkSSHSingleCommand(subCmd, fullRemoteCmd string, cfg *config.Config) err
 
 	// Check SSH-specific denied commands
 	for _, deny := range cfg.SSH.DeniedCommands {
-		if matchesPrefix(normalized, deny) {
+		if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(deny)) {
 			return &SSHBlockedError{
 				RemoteCommand: fullRemoteCmd,
 				Reason:        fmt.Sprintf("command %q matches ssh.deniedCommands %q", subCmd, deny),
@@ -441,7 +508,7 @@ func checkSSHSingleCommand(subCmd, fullRemoteCmd string, cfg *config.Config) err
 	// Allowlist mode: check if command is in allowedCommands
 	if len(cfg.SSH.AllowedCommands) > 0 {
 		for _, allow := range cfg.SSH.AllowedCommands {
-			if matchesPrefix(normalized, allow) {
+			if matchesTokenizedCommandRule(actualTokens, normalizeCommandTokens(allow)) {
 				return nil
 			}
 		}

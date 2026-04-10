@@ -444,8 +444,19 @@ func TestMatchesPrefix(t *testing.T) {
 		{"dd if=/dev/zero", "dd if=", true},
 		{"dd of=/tmp/file", "dd of=", true},
 		{"dd if=/dev/zero of=/tmp/file", "dd if=", true},
+		{"dd of=/tmp/file if=/dev/zero", "dd if=", true}, // if= can appear later
 		{"dd of=/tmp/file if=/dev/zero", "dd of=", true}, // of= can come first too
 		{"dd if=", "dd if=", true},                       // exact match
+		{"git push --force", "git push", true},
+
+		// Leading global flags before the first subcommand token are ignored.
+		{"docker --debug run --privileged", "docker run --privileged", true},
+		{"docker --context=prod run --privileged", "docker run --privileged", true},
+		{"docker --context prod run --privileged", "docker run --privileged", true},
+
+		// We intentionally do not make all arguments order-insensitive.
+		{"docker run --name test --privileged", "docker run --privileged", false},
+		{"docker foo run --privileged", "docker run --privileged", false},
 
 		// False negatives for equals suffix
 		{"dd if /dev/zero", "dd if=", false},      // space instead of equals

@@ -45,9 +45,39 @@ func TestMatchesRuntimeArgvPrefix(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "equals suffix can appear later",
+			actual: []string{"dd", "of=/tmp/out", "if=/dev/zero"},
+			rule:   "dd if=",
+			want:   true,
+		},
+		{
 			name:   "different subcommand denied",
 			actual: []string{"git", "status"},
 			rule:   "git push",
+			want:   false,
+		},
+		{
+			name:   "leading global flags before subcommand are skipped",
+			actual: []string{"docker", "--debug", "run", "--privileged"},
+			rule:   "docker run --privileged",
+			want:   true,
+		},
+		{
+			name:   "leading global flag value before subcommand is skipped",
+			actual: []string{"docker", "--context", "prod", "run", "--privileged"},
+			rule:   "docker run --privileged",
+			want:   true,
+		},
+		{
+			name:   "non equals tokens after subcommand stay positional",
+			actual: []string{"docker", "run", "--name", "test", "--privileged"},
+			rule:   "docker run --privileged",
+			want:   false,
+		},
+		{
+			name:   "positional args before subcommand are not skipped",
+			actual: []string{"docker", "foo", "run", "--privileged"},
+			rule:   "docker run --privileged",
 			want:   false,
 		},
 	}

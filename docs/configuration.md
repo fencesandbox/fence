@@ -343,6 +343,13 @@ Fence also enforces runtime child-process exec policy:
 - `runtimeExecPolicy: "argv"` is Linux-only and uses seccomp user notification to inspect the actual `execve` argv before allowing or denying child process execs.
 - Both modes apply even when the executable is launched by an allowed parent process (for example, `claude`, `codex`, `opencode`, or `env`).
 
+Matching notes:
+
+- Rules are still command prefixes, not fully order-insensitive command semantics.
+- Tokens ending in `=` act like presence checks later in the argv, so `dd if=` also matches `dd of=/tmp/out if=/dev/zero`.
+- Leading global flags before the first subcommand token are skipped, so `docker run --privileged` also matches `docker --debug run --privileged`.
+- Other tokens stay positional, so `docker run --privileged` does not automatically match `docker run --name test --privileged`.
+
 ### Shared and Multicall Binaries
 
 Some systems use multicall binaries: a single executable file that implements many commands via hardlinks or symlinks. Examples include busybox (`ls`, `cat`, `head`, `tail`, and hundreds more sharing one binary) and some coreutils builds.

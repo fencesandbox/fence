@@ -849,25 +849,7 @@ func matchesRuntimeArgvPrefix(actual []string, rule string) bool {
 	}
 
 	ruleTokens := tokenizeCommand(rule)
-	if len(ruleTokens) == 0 || len(actual) < len(ruleTokens) {
-		return false
-	}
-
-	ruleTokens[0] = filepath.Base(ruleTokens[0])
-	for i, want := range ruleTokens {
-		got := actual[i]
-		if strings.HasSuffix(want, "=") {
-			if !strings.HasPrefix(got, want) {
-				return false
-			}
-			continue
-		}
-		if got != want {
-			return false
-		}
-	}
-
-	return true
+	return matchesTokenizedCommandRule(actual, ruleTokens)
 }
 
 func quoteRuntimeArgv(argv []string) string {
