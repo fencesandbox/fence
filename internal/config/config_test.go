@@ -251,6 +251,20 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestStrictDenyReadImpliesDefaultDenyRead(t *testing.T) {
+	cfg := Config{
+		Filesystem: FilesystemConfig{
+			StrictDenyRead: true,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+	if !cfg.Filesystem.DefaultDenyRead {
+		t.Error("expected DefaultDenyRead to be true when StrictDenyRead is set")
+	}
+}
+
 func TestDefault(t *testing.T) {
 	cfg := Default()
 	if cfg == nil {
@@ -1029,6 +1043,43 @@ func TestMerge(t *testing.T) {
 		}
 		if len(result.Filesystem.AllowRead) != 1 {
 			t.Errorf("expected 1 allowRead path, got %d", len(result.Filesystem.AllowRead))
+		}
+	})
+
+	t.Run("merge strictDenyRead from base", func(t *testing.T) {
+		base := &Config{
+			Filesystem: FilesystemConfig{
+				DefaultDenyRead: true,
+				StrictDenyRead:  true,
+			},
+		}
+		override := &Config{
+			Filesystem: FilesystemConfig{
+				AllowRead: []string{"/home/user/project"},
+			},
+		}
+		result := Merge(base, override)
+
+		if !result.Filesystem.StrictDenyRead {
+			t.Error("expected StrictDenyRead to be true (from base)")
+		}
+	})
+
+	t.Run("merge strictDenyRead from override", func(t *testing.T) {
+		base := &Config{
+			Filesystem: FilesystemConfig{
+				DefaultDenyRead: true,
+			},
+		}
+		override := &Config{
+			Filesystem: FilesystemConfig{
+				StrictDenyRead: true,
+			},
+		}
+		result := Merge(base, override)
+
+		if !result.Filesystem.StrictDenyRead {
+			t.Error("expected StrictDenyRead to be true (from override)")
 		}
 	})
 
