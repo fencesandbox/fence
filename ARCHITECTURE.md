@@ -107,6 +107,7 @@ type Config struct {
     Network    NetworkConfig    // Domains, localhost controls, proxy ports, Unix sockets
     Filesystem FilesystemConfig // Read/write/execute restrictions
     Devices    DevicesConfig    // Linux /dev policy
+    MacOS      MacOSConfig      // macOS-specific advanced sandbox controls
     Command    CommandConfig    // Local command rules
     SSH        SSHConfig        // SSH host / remote command rules
     AllowPty   bool             // Allow pseudo-terminal access
@@ -141,6 +142,8 @@ type Config struct {
   to localhost is not the same as connecting out to localhost services.
 - On macOS, Unix socket access can be allowlisted with `allowUnixSockets` or
   fully opened with `allowAllUnixSockets`.
+- On macOS, additional Mach/XPC permissions can be granted with
+  `macos.mach.lookup` and `macos.mach.register`.
 - `allowedDomains: ["*"]` enables relaxed direct-network mode. Fence still
   configures proxies for proxy-aware clients, but the sandbox stops relying on
   forced proxy-only routing. In that mode, `deniedDomains` only applies to

@@ -66,6 +66,8 @@ func TestMarshalConfigJSON_IncludesExtendedSections(t *testing.T) {
 	cfg.Filesystem.AllowExecute = []string{"/usr/bin/bash"}
 	cfg.Devices.Mode = DeviceModeMinimal
 	cfg.Devices.Allow = []string{"/dev/null"}
+	cfg.MacOS.Mach.Lookup = []string{"org.chromium.*"}
+	cfg.MacOS.Mach.Register = []string{"org.chromium.Chromium.MachPortRendezvousServer"}
 	cfg.Command.AcceptSharedBinaryCannotRuntimeDeny = []string{"python"}
 	cfg.Command.RuntimeExecPolicy = RuntimeExecPolicyArgv
 	cfg.SSH.AllowedHosts = []string{"*.example.com"}
@@ -87,6 +89,12 @@ func TestMarshalConfigJSON_IncludesExtendedSections(t *testing.T) {
 	assert.Contains(t, output, `"devices": {`)
 	assert.Contains(t, output, `"mode": "minimal"`)
 	assert.Contains(t, output, `"/dev/null"`)
+	assert.Contains(t, output, `"macos": {`)
+	assert.Contains(t, output, `"mach": {`)
+	assert.Contains(t, output, `"lookup": [`)
+	assert.Contains(t, output, `"org.chromium.*"`)
+	assert.Contains(t, output, `"register": [`)
+	assert.Contains(t, output, `"org.chromium.Chromium.MachPortRendezvousServer"`)
 	assert.Contains(t, output, `"acceptSharedBinaryCannotRuntimeDeny": [`)
 	assert.Contains(t, output, `"python"`)
 	assert.Contains(t, output, `"runtimeExecPolicy": "argv"`)

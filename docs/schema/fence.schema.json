@@ -146,6 +146,36 @@
         "null"
       ]
     },
+    "macos": {
+      "additionalProperties": false,
+      "description": "macOS-specific advanced sandbox controls. Ignored on non-macOS platforms.",
+      "properties": {
+        "mach": {
+          "additionalProperties": false,
+          "description": "Mach and XPC permissions for the macOS Seatbelt backend.",
+          "properties": {
+            "lookup": {
+              "description": "Additional Mach/XPC services the macOS sandbox may look up. Supports exact service names, trailing-wildcard prefixes like \"org.chromium.*\", and \"*\" to allow all Mach lookups.",
+              "items": {
+                "pattern": "^(\\*|[^*]+\\*?)$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "register": {
+              "description": "Additional Mach/XPC services the macOS sandbox may register. Supports exact service names, trailing-wildcard prefixes like \"org.chromium.*\", and \"*\" to allow all Mach registrations.",
+              "items": {
+                "pattern": "^(\\*|[^*]+\\*?)$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "network": {
       "additionalProperties": false,
       "description": "Network access restrictions. Controls which domains the sandbox may connect to and how local networking is handled.",

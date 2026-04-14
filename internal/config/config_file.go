@@ -45,6 +45,17 @@ type cleanDevicesConfig struct {
 	Allow []string   `json:"allow,omitempty"`
 }
 
+// cleanMacOSConfig is used for JSON output with omitempty to skip empty fields.
+type cleanMacOSConfig struct {
+	Mach *cleanMachConfig `json:"mach,omitempty"`
+}
+
+// cleanMachConfig is used for JSON output with omitempty to skip empty fields.
+type cleanMachConfig struct {
+	Lookup   []string `json:"lookup,omitempty"`
+	Register []string `json:"register,omitempty"`
+}
+
 // cleanCommandConfig is used for JSON output with omitempty to skip empty fields.
 type cleanCommandConfig struct {
 	Deny                                []string          `json:"deny,omitempty"`
@@ -72,6 +83,7 @@ type cleanConfig struct {
 	Network         *cleanNetworkConfig    `json:"network,omitempty"`
 	Filesystem      *cleanFilesystemConfig `json:"filesystem,omitempty"`
 	Devices         *cleanDevicesConfig    `json:"devices,omitempty"`
+	MacOS           *cleanMacOSConfig      `json:"macos,omitempty"`
 	Command         *cleanCommandConfig    `json:"command,omitempty"`
 	SSH             *cleanSSHConfig        `json:"ssh,omitempty"`
 }
@@ -123,6 +135,17 @@ func MarshalConfigJSON(cfg *Config) ([]byte, error) {
 	}
 	if !isDevicesEmpty(devices) {
 		clean.Devices = &devices
+	}
+
+	// macOS config - only include if non-empty
+	mach := cleanMachConfig{
+		Lookup:   cfg.MacOS.Mach.Lookup,
+		Register: cfg.MacOS.Mach.Register,
+	}
+	if !isMachEmpty(mach) {
+		clean.MacOS = &cleanMacOSConfig{
+			Mach: &mach,
+		}
 	}
 
 	// Command config - only include if non-empty
@@ -178,6 +201,10 @@ func isFilesystemEmpty(f cleanFilesystemConfig) bool {
 
 func isDevicesEmpty(d cleanDevicesConfig) bool {
 	return d.Mode == "" && len(d.Allow) == 0
+}
+
+func isMachEmpty(m cleanMachConfig) bool {
+	return len(m.Lookup) == 0 && len(m.Register) == 0
 }
 
 func isCommandEmpty(c cleanCommandConfig) bool {

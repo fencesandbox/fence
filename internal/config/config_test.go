@@ -44,6 +44,30 @@ func TestValidateDomainPattern(t *testing.T) {
 	}
 }
 
+func TestValidateMachServicePattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr bool
+	}{
+		{"exact service", "com.apple.CoreSimulator.CoreSimulatorService", false},
+		{"prefix wildcard", "org.chromium.*", false},
+		{"allow all", "*", false},
+		{"empty", "", true},
+		{"non-trailing wildcard", "com.*.service", true},
+		{"double wildcard", "com.example.**", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMachServicePattern(tt.pattern)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMachServicePattern(%q) error = %v, wantErr %v", tt.pattern, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestMatchesDomain(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -109,6 +133,29 @@ func TestConfigValidate(t *testing.T) {
 			config: Config{
 				Network: NetworkConfig{
 					DeniedDomains: []string{"*.com"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid macos mach config",
+			config: Config{
+				MacOS: MacOSConfig{
+					Mach: MachConfig{
+						Lookup:   []string{"com.apple.CoreSimulator.CoreSimulatorService", "org.chromium.*"},
+						Register: []string{"org.chromium.Chromium.MachPortRendezvousServer"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid macos mach lookup wildcard placement",
+			config: Config{
+				MacOS: MacOSConfig{
+					Mach: MachConfig{
+						Lookup: []string{"com.*.service"},
+					},
 				},
 			},
 			wantErr: true,
@@ -369,6 +416,25 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.Devices.Allow[0] != "/dev/dri" || cfg.Devices.Allow[1] != "/dev/fuse" {
 					t.Fatalf("unexpected devices allow paths: %v", cfg.Devices.Allow)
+				}
+			},
+		},
+		{
+			name: "config with macos mach settings",
+			setup: func(dir string) string {
+				path := filepath.Join(dir, "macos_mach.json")
+				content := `{"macos":{"mach":{"lookup":["org.chromium.*"],"register":["org.chromium.Chromium.MachPortRendezvousServer"]}}}`
+				_ = os.WriteFile(path, []byte(content), 0o600)
+				return path
+			},
+			wantNil: false,
+			wantErr: false,
+			checkConfig: func(t *testing.T, cfg *Config) {
+				if len(cfg.MacOS.Mach.Lookup) != 1 || cfg.MacOS.Mach.Lookup[0] != "org.chromium.*" {
+					t.Fatalf("unexpected macos.mach.lookup: %v", cfg.MacOS.Mach.Lookup)
+				}
+				if len(cfg.MacOS.Mach.Register) != 1 || cfg.MacOS.Mach.Register[0] != "org.chromium.Chromium.MachPortRendezvousServer" {
+					t.Fatalf("unexpected macos.mach.register: %v", cfg.MacOS.Mach.Register)
 				}
 			},
 		},
@@ -891,6 +957,32 @@ func TestMerge(t *testing.T) {
 		}
 		if result.Network.AllowLocalOutbound == nil || !*result.Network.AllowLocalOutbound {
 			t.Error("expected AllowLocalOutbound to be true (from override)")
+		}
+	})
+
+	t.Run("merge macos mach config", func(t *testing.T) {
+		base := &Config{
+			MacOS: MacOSConfig{
+				Mach: MachConfig{
+					Lookup: []string{"com.apple.CoreSimulator.CoreSimulatorService", "org.chromium.*"},
+				},
+			},
+		}
+		override := &Config{
+			MacOS: MacOSConfig{
+				Mach: MachConfig{
+					Lookup:   []string{"org.chromium.*", "com.apple.windowserver.active"},
+					Register: []string{"org.chromium.Chromium.MachPortRendezvousServer"},
+				},
+			},
+		}
+		result := Merge(base, override)
+
+		if len(result.MacOS.Mach.Lookup) != 3 {
+			t.Errorf("expected 3 macos.mach.lookup entries, got %d: %v", len(result.MacOS.Mach.Lookup), result.MacOS.Mach.Lookup)
+		}
+		if len(result.MacOS.Mach.Register) != 1 || result.MacOS.Mach.Register[0] != "org.chromium.Chromium.MachPortRendezvousServer" {
+			t.Errorf("unexpected macos.mach.register entries: %v", result.MacOS.Mach.Register)
 		}
 	})
 

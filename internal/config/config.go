@@ -20,6 +20,7 @@ type Config struct {
 	Network         NetworkConfig    `json:"network" description:"Network access restrictions. Controls which domains the sandbox may connect to and how local networking is handled."`
 	Filesystem      FilesystemConfig `json:"filesystem" description:"Filesystem access restrictions. Controls which paths may be read, written, or executed inside the sandbox."`
 	Devices         DevicesConfig    `json:"devices,omitempty"`
+	MacOS           MacOSConfig      `json:"macos,omitempty" description:"macOS-specific advanced sandbox controls. Ignored on non-macOS platforms."`
 	Command         CommandConfig    `json:"command" description:"Command execution restrictions. Controls which commands are blocked or allowed at preflight and runtime."`
 	SSH             SSHConfig        `json:"ssh" description:"SSH command and host restrictions. Applies only to ssh invocations; does not affect other network access."`
 	AllowPty        bool             `json:"allowPty,omitempty" description:"Allow the sandboxed process to allocate a pseudo-terminal (PTY). Required for interactive programs that need terminal control (e.g. vim, less, top)."`
@@ -51,6 +52,17 @@ const (
 type DevicesConfig struct {
 	Mode  DeviceMode `json:"mode,omitempty" schema:"enum=auto|minimal|host"` // auto|minimal|host
 	Allow []string   `json:"allow,omitempty" schema:"itemsPattern=^/dev/.+"` // Extra /dev paths to pass through when using a minimal /dev
+}
+
+// MacOSConfig defines macOS-specific sandbox controls.
+type MacOSConfig struct {
+	Mach MachConfig `json:"mach,omitempty" description:"Mach and XPC permissions for the macOS Seatbelt backend."`
+}
+
+// MachConfig defines additional Mach/XPC permissions for macOS sandboxes.
+type MachConfig struct {
+	Lookup   []string `json:"lookup,omitempty" schema:"itemsPattern=^(\\*|[^*]+\\*?)$" description:"Additional Mach/XPC services the macOS sandbox may look up. Supports exact service names, trailing-wildcard prefixes like \"org.chromium.*\", and \"*\" to allow all Mach lookups."`
+	Register []string `json:"register,omitempty" schema:"itemsPattern=^(\\*|[^*]+\\*?)$" description:"Additional Mach/XPC services the macOS sandbox may register. Supports exact service names, trailing-wildcard prefixes like \"org.chromium.*\", and \"*\" to allow all Mach registrations."`
 }
 
 // FilesystemConfig defines filesystem restrictions.
@@ -337,6 +349,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid denied domain %q: %w", domain, err)
 		}
 	}
+	for _, name := range c.MacOS.Mach.Lookup {
+		if err := validateMachServicePattern(name); err != nil {
+			return fmt.Errorf("invalid macos.mach.lookup entry %q: %w", name, err)
+		}
+	}
+	for _, name := range c.MacOS.Mach.Register {
+		if err := validateMachServicePattern(name); err != nil {
+			return fmt.Errorf("invalid macos.mach.register entry %q: %w", name, err)
+		}
+	}
 
 	// strictDenyRead implies defaultDenyRead
 	if c.Filesystem.StrictDenyRead {
@@ -465,6 +487,25 @@ func validateDomainPattern(pattern string) error {
 	// Regular domains must have at least one dot
 	if !strings.Contains(pattern, ".") || strings.HasPrefix(pattern, ".") || strings.HasSuffix(pattern, ".") {
 		return errors.New("invalid domain format")
+	}
+
+	return nil
+}
+
+func validateMachServicePattern(pattern string) error {
+	if pattern == "" {
+		return errors.New("empty Mach service pattern")
+	}
+	if pattern == "*" {
+		return nil
+	}
+
+	trimmed := strings.TrimSuffix(pattern, "*")
+	if trimmed == "" {
+		return errors.New("wildcards are only allowed as a single trailing '*'")
+	}
+	if strings.Contains(trimmed, "*") {
+		return errors.New("wildcards are only allowed as a single trailing '*'")
 	}
 
 	return nil
@@ -659,6 +700,13 @@ func Merge(base, override *Config) *Config {
 
 			// Append slices
 			Allow: mergeStrings(base.Devices.Allow, override.Devices.Allow),
+		},
+
+		MacOS: MacOSConfig{
+			Mach: MachConfig{
+				Lookup:   mergeStrings(base.MacOS.Mach.Lookup, override.MacOS.Mach.Lookup),
+				Register: mergeStrings(base.MacOS.Mach.Register, override.MacOS.Mach.Register),
+			},
 		},
 
 		Command: CommandConfig{

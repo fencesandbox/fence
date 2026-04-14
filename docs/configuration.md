@@ -170,6 +170,42 @@ Setting `allowedDomains: ["*"]` enables **relaxed network mode**:
 
 Use this when you need to support apps that don't respect proxy environment variables.
 
+## macOS Configuration
+
+These settings apply only to the macOS Seatbelt backend and are ignored on
+other platforms.
+
+| Field | Description |
+|-------|-------------|
+| `mach.lookup` | Additional Mach/XPC services to allow for `mach-lookup`. Supports exact service names, trailing-wildcard prefixes like `org.chromium.*`, and `*` to allow all lookups. |
+| `mach.register` | Additional Mach/XPC services to allow for `mach-register`. Supports exact service names, trailing-wildcard prefixes like `org.chromium.*`, and `*` to allow all registrations. |
+
+Example:
+
+```json
+{
+  "macos": {
+    "mach": {
+      "lookup": [
+        "com.apple.CARenderServer",
+        "com.apple.windowserver.active",
+        "org.chromium.*"
+      ],
+      "register": [
+        "org.chromium.Chromium.MachPortRendezvousServer"
+      ]
+    }
+  }
+}
+```
+
+Prefer exact service names when possible. Use trailing wildcards only when the
+service name is dynamic, and reserve `["*"]` for compatibility debugging or as
+a last resort when you intentionally want broad Mach access.
+
+If you're unsure which services a tool needs, run with `-m` to surface blocked
+`mach-lookup` / `mach-register` attempts.
+
 ## Filesystem Configuration
 
 | Field | Description |

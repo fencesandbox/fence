@@ -177,6 +177,7 @@ type Config struct {
     Extends    string           // Template to extend (e.g., "code")
     Network    NetworkConfig
     Filesystem FilesystemConfig
+    MacOS      MacOSConfig
     Command    CommandConfig
     SSH        SSHConfig
     AllowPty   bool             // Allow PTY allocation
@@ -195,6 +196,19 @@ type NetworkConfig struct {
     AllowLocalOutbound  *bool    // Allow outbound to localhost (defaults to AllowLocalBinding)
     HTTPProxyPort       int      // Override HTTP proxy port (0 = auto)
     SOCKSProxyPort      int      // Override SOCKS proxy port (0 = auto)
+}
+```
+
+### MacOSConfig
+
+```go
+type MacOSConfig struct {
+    Mach MachConfig
+}
+
+type MachConfig struct {
+    Lookup   []string // Additional Mach/XPC services allowed for mach-lookup
+    Register []string // Additional Mach/XPC services allowed for mach-register
 }
 ```
 

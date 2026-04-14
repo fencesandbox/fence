@@ -36,6 +36,12 @@ Localhost is separate from "external domains":
 
 - `allowLocalOutbound=false` can intentionally block connections to local services like Redis on `127.0.0.1:6379` (see the dev-server example).
 
+### macOS IPC
+
+- `macos.mach.lookup` and `macos.mach.register` can allow additional XPC/Mach services inside the macOS Seatbelt sandbox.
+- These are local IPC exceptions, not domain allowlists. Granting more Mach access can let sandboxed code interact with system services that sit outside Fence's normal proxy-based network model.
+- Prefer exact service names. Trailing wildcard prefixes and especially `["*"]` are broader compatibility tradeoffs and should be used sparingly.
+
 ### Filesystem
 
 - **Writes are denied by default**; you must opt in with `allowWrite`.

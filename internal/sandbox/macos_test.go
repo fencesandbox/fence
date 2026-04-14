@@ -116,6 +116,8 @@ func buildMacOSParamsForTest(cfg *config.Config) MacOSSandboxParams {
 		AllowAllUnixSockets:     cfg.Network.AllowAllUnixSockets,
 		AllowLocalBinding:       allowLocalBinding,
 		AllowLocalOutbound:      allowLocalOutbound,
+		MachLookup:              cfg.MacOS.Mach.Lookup,
+		MachRegister:            cfg.MacOS.Mach.Register,
 		DefaultDenyRead:         cfg.Filesystem.DefaultDenyRead,
 		StrictDenyRead:          cfg.Filesystem.StrictDenyRead,
 		ReadAllowPaths:          cfg.Filesystem.AllowRead,
@@ -124,6 +126,86 @@ func buildMacOSParamsForTest(cfg *config.Config) MacOSSandboxParams {
 		WriteDenyPaths:          cfg.Filesystem.DenyWrite,
 		AllowPty:                cfg.AllowPty,
 		AllowGitConfig:          cfg.Filesystem.AllowGitConfig,
+	}
+}
+
+func TestMacOS_MachLookupRules(t *testing.T) {
+	tests := []struct {
+		name         string
+		lookup       []string
+		wantContains []string
+	}{
+		{
+			name:         "exact mach lookup",
+			lookup:       []string{"com.apple.CoreSimulator.CoreSimulatorService"},
+			wantContains: []string{`(allow mach-lookup (global-name "com.apple.CoreSimulator.CoreSimulatorService"))`},
+		},
+		{
+			name:         "wildcard mach lookup",
+			lookup:       []string{"org.chromium.*"},
+			wantContains: []string{`(allow mach-lookup (global-name-regex #"^org\\.chromium\\."))`},
+		},
+		{
+			name:         "allow all mach lookup",
+			lookup:       []string{"*"},
+			wantContains: []string{`(allow mach-lookup)`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := MacOSSandboxParams{
+				Command:    "echo test",
+				MachLookup: tt.lookup,
+			}
+
+			profile := GenerateSandboxProfile(params)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(profile, want) {
+					t.Fatalf("profile should contain %q, got:\n%s", want, profile)
+				}
+			}
+		})
+	}
+}
+
+func TestMacOS_MachRegisterRules(t *testing.T) {
+	tests := []struct {
+		name         string
+		register     []string
+		wantContains []string
+	}{
+		{
+			name:         "exact mach register",
+			register:     []string{"org.chromium.Chromium.MachPortRendezvousServer"},
+			wantContains: []string{`(allow mach-register (global-name "org.chromium.Chromium.MachPortRendezvousServer"))`},
+		},
+		{
+			name:         "wildcard mach register",
+			register:     []string{"org.chromium.*"},
+			wantContains: []string{`(allow mach-register (global-name-regex #"^org\\.chromium\\."))`},
+		},
+		{
+			name:         "allow all mach register",
+			register:     []string{"*"},
+			wantContains: []string{`(allow mach-register)`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := MacOSSandboxParams{
+				Command:      "echo test",
+				MachRegister: tt.register,
+			}
+
+			profile := GenerateSandboxProfile(params)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(profile, want) {
+					t.Fatalf("profile should contain %q, got:\n%s", want, profile)
+				}
+			}
+		})
 	}
 }
 

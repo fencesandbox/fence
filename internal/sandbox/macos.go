@@ -34,6 +34,8 @@ type MacOSSandboxParams struct {
 	AllowAllUnixSockets     bool
 	AllowLocalBinding       bool
 	AllowLocalOutbound      bool
+	MachLookup              []string
+	MachRegister            []string
 	DefaultDenyRead         bool
 	StrictDenyRead          bool
 	ReadAllowPaths          []string
@@ -169,6 +171,30 @@ func getTmpdirParent() []string {
 	}
 
 	return []string{parent}
+}
+
+func buildMachPermissionRule(operation, pattern string) string {
+	if pattern == "*" {
+		return fmt.Sprintf("(allow %s)", operation)
+	}
+	if strings.HasSuffix(pattern, "*") {
+		regex := "^" + regexp.QuoteMeta(strings.TrimSuffix(pattern, "*"))
+		return fmt.Sprintf("(allow %s (global-name-regex #%s))", operation, escapePath(regex))
+	}
+	return fmt.Sprintf("(allow %s (global-name %s))", operation, escapePath(pattern))
+}
+
+func writeMachPermissionRules(profile *strings.Builder, operation string, patterns []string) {
+	if len(patterns) == 0 {
+		return
+	}
+	if slices.Contains(patterns, "*") {
+		profile.WriteString(buildMachPermissionRule(operation, "*") + "\n")
+		return
+	}
+	for _, pattern := range patterns {
+		profile.WriteString(buildMachPermissionRule(operation, pattern) + "\n")
+	}
 }
 
 // generateReadRules generates filesystem read rules for the sandbox profile.
@@ -524,6 +550,17 @@ func GenerateSandboxProfile(params MacOSSandboxParams) string {
 
 `)
 
+	if len(params.MachLookup) > 0 {
+		profile.WriteString("; User-specified Mach lookup services\n")
+		writeMachPermissionRules(&profile, "mach-lookup", params.MachLookup)
+		profile.WriteString("\n")
+	}
+	if len(params.MachRegister) > 0 {
+		profile.WriteString("; User-specified Mach register services\n")
+		writeMachPermissionRules(&profile, "mach-register", params.MachRegister)
+		profile.WriteString("\n")
+	}
+
 	if len(params.DeniedExecPaths) > 0 {
 		profile.WriteString("; Runtime executable deny (applies to child processes)\n")
 		for _, execPath := range params.DeniedExecPaths {
@@ -667,6 +704,8 @@ func WrapCommandMacOS(cfg *config.Config, command string, httpPort, socksPort in
 		AllowAllUnixSockets:     cfg.Network.AllowAllUnixSockets,
 		AllowLocalBinding:       allowLocalBinding,
 		AllowLocalOutbound:      allowLocalOutbound,
+		MachLookup:              cfg.MacOS.Mach.Lookup,
+		MachRegister:            cfg.MacOS.Mach.Register,
 		DefaultDenyRead:         cfg.Filesystem.DefaultDenyRead,
 		StrictDenyRead:          cfg.Filesystem.StrictDenyRead,
 		ReadAllowPaths:          cfg.Filesystem.AllowRead,

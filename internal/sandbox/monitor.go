@@ -154,7 +154,11 @@ func shouldShowViolation(operation string) bool {
 		return true
 	}
 
-	// Filter out everything else (mach-lookup, file-ioctl, etc.)
+	if strings.HasPrefix(operation, "mach-") {
+		return true
+	}
+
+	// Filter out everything else (file-ioctl, etc.)
 	return false
 }
 
