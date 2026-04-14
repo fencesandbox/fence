@@ -71,3 +71,32 @@ func TestLoadConfigResolved(t *testing.T) {
 		t.Fatalf("expected allowWrite to be preserved, got %v", resolved.Filesystem.AllowWrite)
 	}
 }
+
+func TestPublicConfigSectionTypes(t *testing.T) {
+	cfg := &Config{
+		MacOS: MacOSConfig{
+			Mach: MachConfig{
+				Lookup:   []string{"org.chromium.*"},
+				Register: []string{"org.chromium.Chromium.MachPortRendezvousServer"},
+			},
+		},
+		Command: CommandConfig{
+			Deny:              []string{"git push"},
+			RuntimeExecPolicy: RuntimeExecPolicyArgv,
+		},
+		SSH: SSHConfig{
+			AllowedHosts:    []string{"*.example.com"},
+			AllowedCommands: []string{"ls"},
+		},
+	}
+
+	if got := cfg.MacOS.Mach.Lookup[0]; got != "org.chromium.*" {
+		t.Fatalf("MacOSConfig/MachConfig lookup = %q, want %q", got, "org.chromium.*")
+	}
+	if got := cfg.Command.RuntimeExecPolicy; got != RuntimeExecPolicyArgv {
+		t.Fatalf("CommandConfig runtime exec policy = %q, want %q", got, RuntimeExecPolicyArgv)
+	}
+	if got := cfg.SSH.AllowedHosts[0]; got != "*.example.com" {
+		t.Fatalf("SSHConfig allowed host = %q, want %q", got, "*.example.com")
+	}
+}

@@ -34,6 +34,26 @@ const (
 	DeviceModeHost    DeviceMode = config.DeviceModeHost
 )
 
+// MacOSConfig defines macOS-specific sandbox controls.
+type MacOSConfig = config.MacOSConfig
+
+// MachConfig defines additional Mach/XPC permissions for macOS sandboxes.
+type MachConfig = config.MachConfig
+
+// CommandConfig defines command restrictions.
+type CommandConfig = config.CommandConfig
+
+// RuntimeExecPolicy controls how Linux runtime child-process execs are enforced.
+type RuntimeExecPolicy = config.RuntimeExecPolicy
+
+const (
+	RuntimeExecPolicyPath RuntimeExecPolicy = config.RuntimeExecPolicyPath
+	RuntimeExecPolicyArgv RuntimeExecPolicy = config.RuntimeExecPolicyArgv
+)
+
+// SSHConfig defines SSH command restrictions.
+type SSHConfig = config.SSHConfig
+
 // Manager handles sandbox initialization and command wrapping.
 type Manager = sandbox.Manager
 
