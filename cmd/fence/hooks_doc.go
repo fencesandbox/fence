@@ -181,5 +181,89 @@ func removeCommandsFromHookGroup(group map[string]any, matcher func(string) bool
 }
 
 func containsHelperMode(command, helperMode string) bool {
-	return strings.Contains(command, helperMode)
+	tokens := tokenizeHookCommand(command)
+	executableIndex := firstHookExecutableTokenIndex(tokens)
+	if executableIndex == -1 {
+		return false
+	}
+	if filepath.Base(tokens[executableIndex]) != "fence" {
+		return false
+	}
+
+	for _, token := range tokens[executableIndex+1:] {
+		if token == helperMode {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenizeHookCommand(command string) []string {
+	var tokens []string
+	var current strings.Builder
+	var inSingleQuote bool
+	var inDoubleQuote bool
+
+	for _, c := range command {
+		switch {
+		case c == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+		case c == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+		case (c == ' ' || c == '\t') && !inSingleQuote && !inDoubleQuote:
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(c)
+		}
+	}
+
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+
+	return tokens
+}
+
+func firstHookExecutableTokenIndex(tokens []string) int {
+	for i, token := range tokens {
+		if isShellAssignmentToken(token) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func isShellAssignmentToken(token string) bool {
+	separator := strings.IndexByte(token, '=')
+	if separator <= 0 {
+		return false
+	}
+
+	name := token[:separator]
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if i == 0 {
+			if c != '_' && !isASCIILetter(c) {
+				return false
+			}
+			continue
+		}
+		if c != '_' && !isASCIILetter(c) && !isASCIIDigit(c) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isASCIILetter(c byte) bool {
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+}
+
+func isASCIIDigit(c byte) bool {
+	return '0' <= c && c <= '9'
 }

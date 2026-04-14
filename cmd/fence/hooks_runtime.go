@@ -208,6 +208,9 @@ func isPureCDCommand(command string) bool {
 	if command != "cd" && !(strings.HasPrefix(command, "cd ") || strings.HasPrefix(command, "cd\t")) {
 		return false
 	}
+	if containsCommandSubstitution(command) {
+		return false
+	}
 
 	for _, separator := range []string{"&&", "||", ";", "|", ">", "<", "\n", "\r"} {
 		if strings.Contains(command, separator) {
@@ -216,6 +219,48 @@ func isPureCDCommand(command string) bool {
 	}
 
 	return true
+}
+
+func containsCommandSubstitution(command string) bool {
+	var inSingleQuote bool
+	var inDoubleQuote bool
+	var escaped bool
+
+	runes := []rune(command)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && !inSingleQuote {
+			escaped = true
+			continue
+		}
+		if c == '\'' && !inDoubleQuote {
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if c == '"' && !inSingleQuote {
+			inDoubleQuote = !inDoubleQuote
+			continue
+		}
+		if inSingleQuote {
+			continue
+		}
+		if c == '`' {
+			return true
+		}
+		if c == '$' && i+1 < len(runes) && runes[i+1] == '(' {
+			if i+2 < len(runes) && runes[i+2] == '(' {
+				continue
+			}
+			return true
+		}
+	}
+
+	return false
 }
 
 func isAlreadyFencedCommand(command, fenceExePath string) bool {
