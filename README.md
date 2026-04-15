@@ -95,6 +95,10 @@ fence -t code -- claude  # Runs Claude Code using `code` template config
 # Monitor mode (shows violations)
 fence -m npm install
 
+# Send Fence's own monitor/debug logs to a file
+fence -m --fence-log-file /tmp/fence.log -- claude
+tail -f /tmp/fence.log
+
 # Inspect the config inheritance chain and active merged config
 fence config show
 
