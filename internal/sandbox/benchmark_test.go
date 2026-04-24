@@ -680,63 +680,54 @@ func BenchmarkWrapCommandConfigs(b *testing.B) {
 // Manager init/cleanup split
 // ============================================================================
 //
-// BenchmarkManagerInitialize stops and starts proxies (and on Linux, socat
-// bridges) per iteration. Running it under -count=N can exhaust ephemeral
-// ports. Splitting init and cleanup lets us see which half is expensive
-// and makes the numbers more stable.
+// BenchmarkManagerInitialize measures init + cleanup per iteration. Splitting
+// into `BenchmarkManagerInit` and `BenchmarkManagerCleanup` lets us see which
+// half is expensive without the two costs bleeding together.
+//
+// IMPORTANT: do not batch managers across iterations. Each Manager.Initialize
+// opens proxy listeners (HTTP + SOCKS), so holding N of them alive in a slice
+// multiplies FD usage by N. On fast platforms (macOS) b.N calibrates to tens
+// of thousands of iterations and overruns the default per-process FD limit.
+// The pattern below cleans up every iteration and uses b.StopTimer /
+// b.StartTimer to exclude the cleanup (or setup) from the timed window.
 
-// BenchmarkManagerInit measures only initialization, with cleanup moved
-// outside the timing window.
+// BenchmarkManagerInit measures only initialization. Cleanup happens inside
+// the loop but outside the timing window.
 func BenchmarkManagerInit(b *testing.B) {
 	skipBenchIfSandboxed(b)
 
 	workspace := b.TempDir()
 	cfg := benchConfig(workspace)
 
-	managers := make([]*Manager, 0, b.N)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m := NewManager(cfg, false, false)
 		if err := m.Initialize(); err != nil {
-			b.StopTimer()
-			for _, prev := range managers {
-				prev.Cleanup()
-			}
-			b.Fatalf("failed to initialize: %v", err)
+			b.Fatalf("init failed: %v", err)
 		}
-		managers = append(managers, m)
-	}
-	b.StopTimer()
-
-	for _, m := range managers {
+		b.StopTimer()
 		m.Cleanup()
+		b.StartTimer()
 	}
 }
 
-// BenchmarkManagerCleanup measures only cleanup, with initialization moved
-// outside the timing window.
+// BenchmarkManagerCleanup measures only cleanup. The per-iteration init is
+// excluded from the timing window via b.StopTimer / b.StartTimer.
 func BenchmarkManagerCleanup(b *testing.B) {
 	skipBenchIfSandboxed(b)
 
 	workspace := b.TempDir()
 	cfg := benchConfig(workspace)
 
-	managers := make([]*Manager, b.N)
-	for i := 0; i < b.N; i++ {
-		m := NewManager(cfg, false, false)
-		if err := m.Initialize(); err != nil {
-			for j := 0; j < i; j++ {
-				managers[j].Cleanup()
-			}
-			b.Fatalf("failed to initialize: %v", err)
-		}
-		managers[i] = m
-	}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		managers[i].Cleanup()
+		b.StopTimer()
+		m := NewManager(cfg, false, false)
+		if err := m.Initialize(); err != nil {
+			b.Fatalf("init failed: %v", err)
+		}
+		b.StartTimer()
+		m.Cleanup()
 	}
 }
 
