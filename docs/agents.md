@@ -17,6 +17,14 @@ Treat an agent as "semi-trusted automation":
 
 Fence can also reduce the risk of running agents with fewer interactive permission prompts (e.g. "skip permissions"), as long as your Fence config tightly scopes writes and outbound destinations. It's defense-in-depth, not a substitute for the agent's own safeguards.
 
+> [!NOTE]
+> **Command policy and child processes.** When you wrap a long-running agent (`fence -t code -- claude`), Fence's `command.deny` rules catch the literal command Fence is told to run, plus — at runtime — single-token denies (e.g. `sudo`) on any descendant process. Multi-token rules like `gh repo create`, `git push`, or `npm publish` are only enforced at runtime when:
+>
+> - you're on Linux with `command.runtimeExecPolicy: "argv"` (opt-in), or
+> - you've installed an agent hook (see [Hooks](#hooks)) that re-pipes each shell tool call through `fence -c`.
+>
+> On macOS in the default mode, multi-token denies apply to commands you type directly to `fence` but not to commands an agent spawns as a child process. This is a property of macOS Seatbelt's exec model, not a config bug - see [Enforcement Across Child Processes](configuration.md#enforcement-across-child-processes) for the full matrix and recommended workarounds.
+
 ## Example: API-only agent
 
 ```json
@@ -64,15 +72,9 @@ Note: On Linux, if OpenCode or Gemini CLI is installed via Linuxbrew, Landlock c
 
 ## Hooks
 
-Hook-based wrapping exists for environments where Fence cannot transparently enforce
-child-process, argv-aware exec policy on every descendant command after the
-agent is already running, especially outside Linux. Instead of trying to catch
-child execs after the fact, Fence can use the agent/editor hook system to
-rewrite shell tool invocations up front so they run through Fence.
+Hook-based wrapping uses the agent/editor's own hook system to rewrite shell tool invocations up front so they run through `fence -c`, instead of trying to catch child execs at the OS exec boundary. It is the recommended way to enforce **multi-token command policy** (e.g. `gh repo create`, `git push`) inside agents on macOS, and on Linux when `runtimeExecPolicy: "argv"` is not enabled — see [Enforcement Across Child Processes](configuration.md#enforcement-across-child-processes) for why this gap exists.
 
-Prefer whole-agent wrapping when possible, since it is the stronger isolation
-model. This hook-based approach is the fallback when you need the agent itself
-to stay outside Fence but still want shell commands sandboxed.
+Prefer whole-agent wrapping (`fence -- <agent>`) when possible — it is the stronger isolation model for filesystem and network policy. Hooks are the right addition when you want multi-token command denies to apply to the agent's tool-issued shell calls; the two approaches compose.
 
 `print` emits the hook snippet, and `install`/`uninstall` manage the default
 settings file for that integration.

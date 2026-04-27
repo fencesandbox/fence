@@ -342,7 +342,7 @@ Block specific commands from being executed, even within command chains.
 | `deny` | List of command prefixes to block (e.g., `["git push", "rm -rf"]`) |
 | `allow` | List of command prefixes to allow, overriding `deny` |
 | `useDefaults` | Enable default deny list of dangerous system commands (default: `true`) |
-| `runtimeExecPolicy` | Runtime child-process exec enforcement mode: `path` (default) or Linux-only `argv` |
+| `runtimeExecPolicy` | Runtime child-process exec enforcement mode: `path` (default; single-token rules only) or Linux-only `argv` (multi-token argv-aware). See [Enforcement Across Child Processes](#enforcement-across-child-processes). |
 | `acceptSharedBinaryCannotRuntimeDeny` | List of command names that cannot be isolated at runtime on this system (see below) |
 
 Example:
@@ -378,11 +378,7 @@ Fence detects blocked commands in:
 - Pipelines: `echo test | git push`
 - Shell invocations: `bash -c "git push"` or `sh -lc "ls && git push"`
 
-Fence also enforces runtime child-process exec policy:
-
-- `runtimeExecPolicy: "path"` is the default. Single-token deny entries (for example, `python3`, `node`, `ruby`) are resolved to executable paths and blocked at exec-time.
-- `runtimeExecPolicy: "argv"` is Linux-only and uses seccomp user notification to inspect the actual `execve` argv before allowing or denying child process execs.
-- Both modes apply even when the executable is launched by an allowed parent process (for example, `claude`, `codex`, `opencode`, or `env`).
+Fence also enforces a runtime child-process exec policy that applies to commands launched by descendants of the wrapped process (for example, an agent like `claude`, `codex`, or `opencode`). What gets enforced at runtime depends on platform and `runtimeExecPolicy` — see [Enforcement Across Child Processes](#enforcement-across-child-processes) below for the full matrix and the implications for macOS users.
 
 Matching notes:
 
@@ -390,6 +386,32 @@ Matching notes:
 - Tokens ending in `=` act like presence checks later in the argv, so `dd if=` also matches `dd of=/tmp/out if=/dev/zero`.
 - Leading global flags before the first subcommand token are skipped, so `docker run --privileged` also matches `docker --debug run --privileged`.
 - Other tokens stay positional, so `docker run --privileged` does not automatically match `docker run --name test --privileged`.
+
+### Enforcement Across Child Processes
+
+Fence's command policy is enforced at two distinct points:
+
+- **Preflight** runs once, on the literal command Fence is told to execute (`fence -c "..."` or the trailing argv after `--`). It checks every `deny` rule, single- or multi-token, against that string and any nested `bash -c` payloads.
+- **Runtime exec** is what catches commands launched *after* preflight, by descendants of the wrapped process. This is the case that matters when you wrap a long-running agent: `fence -t code -- claude` preflights `claude` once, and from that point on every shell command the agent spawns is a child process Fence sees only at the OS exec boundary.
+
+What runtime exec actually enforces depends on platform and `runtimeExecPolicy`:
+
+| Rule shape | Preflight | Runtime: Linux `path` (default) | Runtime: Linux `argv` | Runtime: macOS |
+|---|---|---|---|---|
+| Single-token (`sudo`, `python3`) | ✓ | ✓ | ✓ | ✓ |
+| Multi-token (`gh repo create`, `git push`, `npm publish`) | ✓ | — | ✓ | — |
+
+Why the asymmetry: `path` mode enforces denies by masking the resolved executable path at the kernel exec boundary (Linux Landlock / macOS Seatbelt `process-exec`). It can block whole binaries by name but cannot inspect argv. `argv` mode uses Linux seccomp user notification to inspect each `execve`/`execveat`'s actual argument vector and apply prefix rules to it. macOS has no equivalent unprivileged primitive - argv-aware exec mediation there would require an EndpointSecurity system extension, which is out of scope for Fence.
+
+Concretely, this means: with the default `code` template on macOS (or Linux in `path` mode), denies like `gh repo create` and `git push` apply to commands you type directly to `fence`, but **not** to the same commands invoked by an agent you wrapped. This is the same model whether the agent is OpenCode, Claude Code, Codex, or any other process Fence is wrapping as a parent.
+
+To close this gap on a given platform, in order of preference:
+
+1. **Linux**: set `command.runtimeExecPolicy: "argv"`. Multi-token denies are then enforced against every descendant exec.
+2. **Use agent hooks** (cross-platform): for agents that expose a pre-tool-use hook (Claude Code, Cursor, etc.), `fence hooks install --claude` / `--cursor` reroutes each tool-issued shell call back through `fence -c`, which re-triggers preflight on the actual command string. See [Hooks](agents.md#hooks).
+3. **macOS, no agent hook available**: deny the whole executable as a single-token rule (e.g. add `gh` to `command.deny`) when you don't need any subcommand of it. This is blunt but reliable at runtime.
+
+Filesystem isolation, network egress allowlisting, and denied-credential rules apply to every descendant on every platform regardless of `runtimeExecPolicy`. This section is specifically about command-policy enforcement.
 
 ### Shared and Multicall Binaries
 
@@ -423,7 +445,7 @@ Blocking a shared binary is **not** skipped when the collateral names are themse
 
 Current runtime-exec limitations:
 
-- In `path` mode, multi-token rules (for example, `git push`, `dd if=`, `docker run --privileged`) are still preflight-only for child processes.
+- In `path` mode, multi-token rules (for example, `git push`, `dd if=`, `docker run --privileged`) are preflight-only for child processes - see [Enforcement Across Child Processes](#enforcement-across-child-processes) for the cross-platform matrix and recommended workarounds.
 - In `path` mode, aliases are enforced only when they resolve to a denied executable path; for reliable blocking, deny the real executable name/path (for example, `python3`), not only an alias name.
 - In `path` mode, renamed/copied binaries at new paths may bypass unless those paths are also denied.
 - In `argv` mode, Fence fails closed if it cannot safely reconstruct the exec request or if seccomp user notification is unavailable.
