@@ -86,6 +86,10 @@ type LinuxSandboxOptions struct {
 	// tmpfs overmounts, so a path under a fence-overmounted directory
 	// (e.g. /tmp/foo) remains visible.
 	ExposedHostPaths []exposedHostPath
+	// Use Go-based linux-bootstrap wrapper instead of shell script
+	UseLinuxBootstrap bool
+	// Development-only: force shell script bootstrap even when UseLinuxBootstrap is true
+	ShellBasedLinuxBootstrap bool
 }
 
 const (
@@ -545,23 +549,26 @@ func getMandatoryDenyPaths(cwd string, allowGitConfig bool) []string {
 // It uses available security features (Landlock, seccomp) with graceful fallback.
 func WrapCommandLinux(cfg *config.Config, command string, bridge *LinuxBridge, reverseBridge *ReverseBridge, debug bool) (string, error) {
 	return WrapCommandLinuxWithOptions(cfg, command, bridge, reverseBridge, LinuxSandboxOptions{
-		UseLandlock: true, // Enabled by default, will fall back if not available
-		UseSeccomp:  true, // Enabled by default
-		UseEBPF:     true, // Enabled by default if available
-		Debug:       debug,
+		UseLandlock:       true, // Enabled by default, will fall back if not available
+		UseSeccomp:        true, // Enabled by default
+		UseEBPF:           true, // Enabled by default if available
+		UseLinuxBootstrap: true, // Use Go-based wrapper instead of shell script
+		Debug:             debug,
 	})
 }
 
 // WrapCommandLinuxWithShell wraps a command with configurable shell selection.
-func WrapCommandLinuxWithShell(cfg *config.Config, command string, workingDir string, bridge *LinuxBridge, reverseBridge *ReverseBridge, debug bool, shellMode string, shellLogin bool) (string, error) {
+func WrapCommandLinuxWithShell(cfg *config.Config, command string, workingDir string, bridge *LinuxBridge, reverseBridge *ReverseBridge, debug bool, shellMode string, shellLogin bool, shellBasedLinuxBootstrap bool) (string, error) {
 	return WrapCommandLinuxWithOptions(cfg, command, bridge, reverseBridge, LinuxSandboxOptions{
-		UseLandlock: true,
-		UseSeccomp:  true,
-		UseEBPF:     true,
-		Debug:       debug,
-		ShellMode:   shellMode,
-		ShellLogin:  shellLogin,
-		WorkDir:     workingDir,
+		UseLandlock:              true,
+		UseSeccomp:               true,
+		UseEBPF:                  true,
+		UseLinuxBootstrap:        !shellBasedLinuxBootstrap, // Use Go wrapper unless shell-based flag is set
+		ShellBasedLinuxBootstrap: shellBasedLinuxBootstrap,  // Development-only: force shell script
+		Debug:                    debug,
+		ShellMode:                shellMode,
+		ShellLogin:               shellLogin,
+		WorkDir:                  workingDir,
 	})
 }
 
@@ -676,6 +683,67 @@ func appendLinuxBootstrapExecutableMounts(args []string, mounts []linuxBootstrap
 	return args
 }
 
+func appendLinuxBootstrapWrapperArgs(
+	bwrapArgs []string,
+	fenceExePath, shellPath, shellFlag, command string,
+	bridge *LinuxBridge,
+	reverseBridge *ReverseBridge,
+	cfg *config.Config,
+	debug bool,
+) ([]string, error) {
+	// Use staged bootstrap paths (e.g. /tmp/fence/bin/shell, /tmp/fence/bin/fence)
+	// instead of binding host paths directly. This mirrors the shell-based bootstrap
+	// pattern and ensures executables are accessible at known locations inside the sandbox.
+	// Always mount fence (pass true) since the Go-based bootstrap always needs it
+	// for the --linux-bootstrap command, regardless of whether Landlock is used.
+	needsSocat := bridge != nil || (reverseBridge != nil && len(reverseBridge.Ports) > 0)
+	bootstrapMounts, bootstrapExecs, err := planLinuxBootstrapExecutables(
+		shellPath,
+		fenceExePath,
+		true,
+		needsSocat,
+	)
+	if err != nil {
+		return nil, err
+	}
+	bwrapArgs = appendLinuxBootstrapExecutableMounts(bwrapArgs, bootstrapMounts)
+
+	// Build the linux-bootstrap command line using staged paths
+	bootstrapCmd := []string{bootstrapExecs.Fence, "--linux-bootstrap"}
+	if debug {
+		bootstrapCmd = append(bootstrapCmd, "--debug")
+	}
+	if bridge != nil {
+		bootstrapCmd = append(bootstrapCmd,
+			"--http-socket", bridge.HTTPSocketPath,
+			"--socks-socket", bridge.SOCKSSocketPath,
+		)
+	}
+	if reverseBridge != nil {
+		for i, port := range reverseBridge.Ports {
+			bootstrapCmd = append(bootstrapCmd,
+				"--reverse-bridge", fmt.Sprintf("%d:%s", port, reverseBridge.SocketPaths[i]),
+			)
+		}
+	}
+	bootstrapCmd = append(bootstrapCmd, "--", bootstrapExecs.Shell, shellFlag, command)
+
+	// Set FENCE_SANDBOX=1 from outside the sandbox via bwrap --setenv so it is structurally
+	// guaranteed to be present regardless of any in-sandbox code paths.
+	bwrapArgs = append(bwrapArgs, "--setenv", "FENCE_SANDBOX", "1")
+
+	// Pass config via environment variable
+	if cfg != nil {
+		configJSON, err := json.Marshal(cfg)
+		if err == nil {
+			bwrapArgs = append(bwrapArgs, "--setenv", "FENCE_CONFIG_JSON", string(configJSON))
+		}
+	}
+
+	// Execute the bootstrap command directly (no shell wrapper needed)
+	return append(bwrapArgs, bootstrapCmd...), nil
+}
+
 func buildLinuxBootstrapScript(
 	cfg *config.Config,
 	command string,
@@ -742,6 +810,11 @@ trap cleanup EXIT
 `)
 	script.WriteString(linuxRuntimeEnvScript())
 
+	// NOTE: FENCE_SANDBOX=1 is only exported inside this bridge block, meaning it is absent
+	// when no network bridge is active. This is likely a bug in the shell-based bootstrap path,
+	// but we leave it as-is here; the Go-based bootstrap sets it unconditionally from outside
+	// the sandbox via bwrap --setenv in appendLinuxBootstrapWrapperArgs, which is structurally
+	// guaranteed regardless of any in-sandbox code paths.
 	if bridge != nil {
 		_, _ = fmt.Fprintf(&script, `
 # Start HTTP proxy listener (port 3128 -> Unix socket -> host HTTP proxy)
@@ -762,6 +835,7 @@ export all_proxy=socks5h://127.0.0.1:1080
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy=localhost,127.0.0.1
 export FENCE_SANDBOX=1
+
 
 `,
 			ShellQuote([]string{
@@ -1407,38 +1481,65 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 	// The wrapper re-executes the binary with --landlock-apply, which only fence understands
 	useLandlockWrapper := opts.UseLandlock && features.CanUseLandlock() && fenceExePath != "" && !executableInTmp && executableIsFence
 
+	// Use Go-based linux-bootstrap wrapper when:
+	// 1. Explicitly requested via UseLinuxBootstrap option
+	// 2. Fence binary is accessible (not in /tmp, is fence binary)
+	// 3. ShellBasedLinuxBootstrap is NOT set (development-only flag to force shell script)
+	// This replaces the shell script bootstrap entirely
+	useLinuxBootstrapWrapper := opts.UseLinuxBootstrap && fenceExePath != "" && !executableInTmp && executableIsFence && !opts.ShellBasedLinuxBootstrap
+
 	if opts.Debug && executableInTmp {
 		fencelog.Printf("[fence:linux] Skipping Landlock wrapper (executable in /tmp, likely a test)\n")
 	}
 	if opts.Debug && !executableIsFence {
 		fencelog.Printf("[fence:linux] Skipping Landlock wrapper (running as library, not fence CLI)\n")
 	}
-
-	bootstrapMounts, bootstrapExecs, err := planLinuxBootstrapExecutables(
-		shellPath,
-		fenceExePath,
-		useLandlockWrapper || useArgvRuntimeExecPolicy,
-		bridge != nil ||
-			(reverseBridge != nil && len(reverseBridge.Ports) > 0) ||
-			(opts.LocalOutboundBridge != nil && len(opts.LocalOutboundBridge.Ports) > 0),
-	)
-	if err != nil {
-		return "", err
-	}
-	bwrapArgs = appendLinuxBootstrapExecutableMounts(bwrapArgs, bootstrapMounts)
-
-	innerScript, err := buildLinuxBootstrapScript(cfg, command, bridge, reverseBridge, opts, useLandlockWrapper, bootstrapExecs, shellFlag)
-	if err != nil {
-		return "", err
-	}
-	if useArgvRuntimeExecPolicy {
-		bwrapArgs = append(bwrapArgs, "--", bootstrapExecs.Fence, linuxArgvExecShimMode)
+	if useLinuxBootstrapWrapper && (useArgvRuntimeExecPolicy || (opts.LocalOutboundBridge != nil && len(opts.LocalOutboundBridge.Ports) > 0)) {
+		useLinuxBootstrapWrapper = false
 		if opts.Debug {
-			bwrapArgs = append(bwrapArgs, "--debug")
+			fencelog.Printf("[fence:linux] Falling back to shell bootstrap (Go wrapper does not support argv runtime-exec or local-outbound bridging)\n")
 		}
-		bwrapArgs = append(bwrapArgs, "--", bootstrapExecs.Shell, shellFlag, innerScript)
+	}
+	if opts.Debug && useLinuxBootstrapWrapper {
+		fmt.Fprintf(os.Stderr, "[fence:linux] Using Go-based linux-bootstrap wrapper\n")
+	}
+	if opts.Debug && opts.ShellBasedLinuxBootstrap && opts.UseLinuxBootstrap {
+		fmt.Fprintf(os.Stderr, "[fence:linux] Using shell script bootstrap (--shell-based-linux-bootstrap flag set)\n")
+	}
+
+	if useLinuxBootstrapWrapper {
+		bwrapArgs, err = appendLinuxBootstrapWrapperArgs(bwrapArgs, fenceExePath, shellPath, shellFlag, command, bridge, reverseBridge, cfg, opts.Debug)
+		if err != nil {
+			return "", err
+		}
 	} else {
-		bwrapArgs = append(bwrapArgs, "--", bootstrapExecs.Shell, shellFlag, innerScript)
+		bootstrapMounts, bootstrapExecs, err := planLinuxBootstrapExecutables(
+			shellPath,
+			fenceExePath,
+			useLandlockWrapper || useArgvRuntimeExecPolicy,
+			bridge != nil ||
+				(reverseBridge != nil && len(reverseBridge.Ports) > 0) ||
+				(opts.LocalOutboundBridge != nil && len(opts.LocalOutboundBridge.Ports) > 0),
+		)
+		if err != nil {
+			return "", err
+		}
+		bwrapArgs = appendLinuxBootstrapExecutableMounts(bwrapArgs, bootstrapMounts)
+
+		innerScript, err := buildLinuxBootstrapScript(cfg, command, bridge, reverseBridge, opts, useLandlockWrapper, bootstrapExecs, shellFlag)
+		if err != nil {
+			return "", err
+		}
+
+		if useArgvRuntimeExecPolicy {
+			bwrapArgs = append(bwrapArgs, "--", bootstrapExecs.Fence, linuxArgvExecShimMode)
+			if opts.Debug {
+				bwrapArgs = append(bwrapArgs, "--debug")
+			}
+			bwrapArgs = append(bwrapArgs, "--", bootstrapExecs.Shell, shellFlag, innerScript)
+		} else {
+			bwrapArgs = append(bwrapArgs, "--", bootstrapExecs.Shell, shellFlag, innerScript)
+		}
 	}
 
 	if opts.Debug {

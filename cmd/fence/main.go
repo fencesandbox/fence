@@ -34,23 +34,24 @@ var (
 )
 
 var (
-	debug                 bool
-	monitor               bool
-	settingsPath          string
-	templateName          string
-	listTemplates         bool
-	cmdString             string
-	exposePorts           []string
-	serviceExecutionModel string
-	exposeHostPaths       []string
-	exposeHostPathsRW     []string
-	shellMode             string
-	shellLogin            bool
-	fenceLogFile          string
-	forceNewSession       bool
-	exitCode              int
-	showVersion           bool
-	linuxFeatures         bool
+	debug                    bool
+	monitor                  bool
+	settingsPath             string
+	templateName             string
+	listTemplates            bool
+	cmdString                string
+	exposePorts              []string
+	serviceExecutionModel    string
+	exposeHostPaths          []string
+	exposeHostPathsRW        []string
+	shellMode                string
+	shellLogin               bool
+	fenceLogFile             string
+	forceNewSession          bool
+	exitCode                 int
+	showVersion              bool
+	linuxFeatures            bool
+	shellBasedLinuxBootstrap bool // Development-only flag for testing shell script bootstrap
 )
 
 func main() {
@@ -92,6 +93,13 @@ func main() {
 			fencelog.Printf("[fence:hooks] %v\n", err)
 			os.Exit(2)
 		}
+		return
+	}
+
+	// Check for --linux-bootstrap wrapper mode
+	// This must be checked before cobra to avoid flag conflicts
+	if len(os.Args) >= 2 && os.Args[1] == "--linux-bootstrap" {
+		runLinuxBootstrapWrapper()
 		return
 	}
 
@@ -159,6 +167,7 @@ Configuration file format:
 	rootCmd.Flags().BoolVar(&forceNewSession, "force-new-session", false, "Linux only: force bubblewrap --new-session even for interactive PTY sessions")
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Show version information")
 	rootCmd.Flags().BoolVar(&linuxFeatures, "linux-features", false, "Show available Linux security features and exit")
+	rootCmd.Flags().BoolVar(&shellBasedLinuxBootstrap, "shell-based-linux-bootstrap", false, "TODO remove before merging: Use shell script bootstrap instead of Go implementation")
 
 	rootCmd.Flags().SetInterspersed(true)
 
@@ -287,6 +296,7 @@ func runCommand(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid --expose-host-path-rw %q: %w", p, err)
 		}
 	}
+	manager.SetShellBasedLinuxBootstrap(shellBasedLinuxBootstrap)
 	defer manager.Cleanup()
 
 	if err := manager.Initialize(); err != nil {
@@ -763,6 +773,19 @@ parseCommand:
 		fencelog.Printf("[fence:landlock-wrapper] Applying Landlock restrictions\n")
 	}
 
+	// Resolve the executable path once, before applying Landlock restrictions.
+	// This is important because exec.LookPath may fail under Landlock for non-standard
+	// paths (e.g., /tmp/fence/bin/shell) where directory traversal is constrained.
+	var execPath string
+	if len(command) > 0 {
+		var err error
+		execPath, err = exec.LookPath(command[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[fence:landlock-wrapper] Error: command not found: %s\n", command[0])
+			os.Exit(127)
+		}
+	}
+
 	// Only apply Landlock on Linux
 	if platform.Detect() == platform.Linux {
 		// Load config from environment variable (passed by parent fence process)
@@ -783,8 +806,18 @@ parseCommand:
 		// Get current working directory for relative path resolution
 		cwd, _ := os.Getwd()
 
+		// Allow execution of the command we're about to exec (e.g. /tmp/fence/bin/shell
+		// in the shell-based bootstrap, which is a bind-mount into a non-standard path).
+		var executePaths []string
+		if execPath != "" {
+			executePaths = append(executePaths, execPath)
+			if debugMode {
+				fmt.Fprintf(os.Stderr, "[fence:landlock-wrapper] Adding execute path: %s\n", execPath)
+			}
+		}
+
 		// Apply Landlock restrictions
-		err := sandbox.ApplyLandlockFromConfig(cfg, cwd, nil, debugMode)
+		err := sandbox.ApplyLandlockFromConfigWithExec(cfg, cwd, nil, executePaths, debugMode)
 		if err != nil {
 			if debugMode {
 				fencelog.Printf("[fence:landlock-wrapper] Warning: Landlock not applied: %v\n", err)
@@ -795,13 +828,6 @@ parseCommand:
 		}
 	}
 
-	// Find the executable
-	execPath, err := exec.LookPath(command[0])
-	if err != nil {
-		fencelog.Printf("[fence:landlock-wrapper] Error: command not found: %s\n", command[0])
-		os.Exit(127)
-	}
-
 	if debugMode {
 		fencelog.Printf("[fence:landlock-wrapper] Exec: %s %v\n", execPath, command[1:])
 	}
@@ -810,9 +836,9 @@ parseCommand:
 	hardenedEnv := sandbox.FilterDangerousEnv(os.Environ())
 
 	// Exec the command (replaces this process)
-	err = syscall.Exec(execPath, command, hardenedEnv) //nolint:gosec
-	if err != nil {
-		fencelog.Printf("[fence:landlock-wrapper] Exec failed: %v\n", err)
+	execErr := syscall.Exec(execPath, command, hardenedEnv) //nolint:gosec
+	if execErr != nil {
+		fmt.Fprintf(os.Stderr, "[fence:landlock-wrapper] Exec failed: %v\n", execErr)
 		os.Exit(1)
 	}
 }
