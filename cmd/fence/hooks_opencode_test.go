@@ -789,6 +789,11 @@ func TestHookConfigHasJSONCComments(t *testing.T) {
 		{name: "line comment", content: "{\n  // hi\n  \"x\": 1\n}", want: true},
 		{name: "block comment", content: "{\n  /* hi */\n  \"x\": 1\n}", want: true},
 		{name: "comment-shaped string is not a comment", content: `{"x": "// not a comment"}`, want: false},
+		{name: "block-shaped string is not a comment", content: `{"x": "/* not a comment */"}`, want: false},
+		{name: "escaped quote inside string", content: `{"x": "say \"hi\" //joke"}`, want: false},
+		{name: "trailing comma in object", content: `{"x": 1,}`, want: false},
+		{name: "trailing comma in array", content: `{"a": [1, 2,]}`, want: false},
+		{name: "comment after trailing comma", content: "{\n  \"a\": [1, 2,] // tail\n}", want: true},
 		{name: "empty file", content: "", want: false},
 		{name: "whitespace only", content: "   \n  ", want: false},
 	}
@@ -981,6 +986,52 @@ func TestUninstallOpencodePlugin_PreservesCommentsWhenRemoving(t *testing.T) {
 	}
 }
 
+// TestUninstallOpencodePlugin_RemovesAllDuplicateEntries pins that the byte-edit
+// path strips every occurrence of the Fence plugin, not just the first.
+// Hand-edited configs can have duplicates; leaving stragglers behind would
+// silently leave the plugin active after uninstall reports success.
+func TestUninstallOpencodePlugin_RemovesAllDuplicateEntries(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "opencode.jsonc")
+	original := `{
+  // top
+  "plugin": [
+    "` + opencodePluginPackageName + `",
+    "opencode-helicone-session",
+    "` + opencodePluginPackageName + `"
+  ]
+}`
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	changed, err := uninstallOpencodePlugin(configPath)
+	if err != nil {
+		t.Fatalf("uninstallOpencodePlugin() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("expected uninstall to change the file")
+	}
+
+	updated, err := os.ReadFile(configPath) //nolint:gosec // user-provided path is intentional
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	updatedStr := string(updated)
+
+	if strings.Contains(updatedStr, opencodePluginPackageName) {
+		t.Fatalf("expected ALL Fence plugin entries removed, got:\n%s", updatedStr)
+	}
+	if !strings.Contains(updatedStr, "// top") {
+		t.Fatalf("expected comment preserved, got:\n%s", updatedStr)
+	}
+
+	doc := readJSONCFileForTest(t, configPath)
+	plugins := doc["plugin"].([]any)
+	if len(plugins) != 1 || plugins[0] != "opencode-helicone-session" {
+		t.Fatalf("expected only the unrelated plugin to remain, got %#v", plugins)
+	}
+}
+
 // TestUninstallOpencodePlugin_DropsPluginFieldWhenLastEntryRemoved pins the
 // last-entry-removal contract: the byte-edit path defers to the structured
 // rewrite when removing the final plugin entry (because sjson's field-level
@@ -1014,6 +1065,41 @@ func TestUninstallOpencodePlugin_DropsPluginFieldWhenLastEntryRemoved(t *testing
 	doc := readJSONCFileForTest(t, configPath)
 	if _, ok := doc["plugin"]; ok {
 		t.Fatalf("expected plugin field removed when empty, got %#v", doc["plugin"])
+	}
+	if doc["theme"] != "dracula" {
+		t.Fatalf("expected theme preserved, got %#v", doc["theme"])
+	}
+}
+
+// TestUninstallOpencodePlugin_DropsPluginFieldWhenAllEntriesAreDuplicates
+// covers the corner where every entry in the array is the Fence plugin.
+// Removing all of them empties the array, which we drop entirely (matching
+// the single-entry case) — comments are stripped, but the field structure
+// is correct.
+func TestUninstallOpencodePlugin_DropsPluginFieldWhenAllEntriesAreDuplicates(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "opencode.jsonc")
+	original := `{
+  "plugin": [
+    "` + opencodePluginPackageName + `",
+    "` + opencodePluginPackageName + `"
+  ],
+  "theme": "dracula"
+}`
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	changed, err := uninstallOpencodePlugin(configPath)
+	if err != nil {
+		t.Fatalf("uninstallOpencodePlugin() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("expected uninstall to change the file")
+	}
+
+	doc := readJSONCFileForTest(t, configPath)
+	if _, ok := doc["plugin"]; ok {
+		t.Fatalf("expected plugin field removed when all entries were duplicates, got %#v", doc["plugin"])
 	}
 	if doc["theme"] != "dracula" {
 		t.Fatalf("expected theme preserved, got %#v", doc["theme"])

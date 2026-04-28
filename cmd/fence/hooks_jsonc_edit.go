@@ -79,12 +79,14 @@ func addStringToOpencodePluginArray(path, value string) (editStringInPluginArray
 	return editStringInPluginArrayResult{attempted: true, changed: true}, nil
 }
 
-// removeStringFromOpencodePluginArray removes the first occurrence of value
-// from the `plugin` array via sjson, preserving comments and surrounding
-// formatting. Declines for missing file / missing or non-array `plugin`, and
-// also for last-entry removal — sjson's field-level delete re-marshals the
-// surrounding region and loses comments anyway, so we defer to the structured
-// path (which fires the documented comment-stripping warning).
+// removeStringFromOpencodePluginArray removes every occurrence of value from
+// the `plugin` array via sjson, preserving comments and surrounding
+// formatting. Declines (and lets the caller fall back to the structured path)
+// when the file is missing, the `plugin` field is missing or non-array, or
+// removing all matches would leave the array empty — sjson's field-level
+// delete re-marshals the surrounding region and loses comments anyway, so we
+// defer to the structured path for that case (which fires the documented
+// comment-stripping warning).
 func removeStringFromOpencodePluginArray(path, value string) (editStringInPluginArrayResult, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // user-provided path is intentional
 	if err != nil {
@@ -99,27 +101,36 @@ func removeStringFromOpencodePluginArray(path, value string) (editStringInPlugin
 		return editStringInPluginArrayResult{attempted: false}, nil
 	}
 
-	matchIndex := -1
+	// Collect every matching index. Iterating the gjson array view once is
+	// cheap, and we need the full set up front so we can decide whether to
+	// stay in byte-edit mode or defer.
+	var matchIndices []int
 	remainingCount := 0
 	for i, entry := range pluginField.Array() {
-		if entry.Type == gjson.String && entry.String() == value && matchIndex == -1 {
-			matchIndex = i
+		if entry.Type == gjson.String && entry.String() == value {
+			matchIndices = append(matchIndices, i)
 			continue
 		}
 		remainingCount++
 	}
-	if matchIndex == -1 {
+	if len(matchIndices) == 0 {
 		return editStringInPluginArrayResult{attempted: true, changed: false}, nil
 	}
 
 	if remainingCount == 0 {
-		// Defer to the structured path so the empty `plugin` field is dropped cleanly.
+		// All entries match; structured path will drop the empty field cleanly.
 		return editStringInPluginArrayResult{attempted: false}, nil
 	}
 
-	updated, err := sjson.DeleteBytes(data, fmt.Sprintf("plugin.%d", matchIndex))
-	if err != nil {
-		return editStringInPluginArrayResult{attempted: false}, nil
+	// Delete from highest index down so earlier indices stay stable across
+	// successive sjson deletions.
+	updated := data
+	for i := len(matchIndices) - 1; i >= 0; i-- {
+		next, err := sjson.DeleteBytes(updated, fmt.Sprintf("plugin.%d", matchIndices[i]))
+		if err != nil {
+			return editStringInPluginArrayResult{attempted: false}, nil
+		}
+		updated = next
 	}
 
 	//nolint:gosec // G703: path comes from the user via --file or the resolved

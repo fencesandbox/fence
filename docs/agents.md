@@ -133,7 +133,9 @@ fence hooks install --opencode
 fence hooks uninstall --opencode
 ```
 
-Default file: `~/.config/opencode/opencode.json`
+Default file: `~/.config/opencode/opencode.jsonc` if it exists, otherwise
+`~/.config/opencode/opencode.json` (created on first install). Override with
+`--file` to target a project-local `opencode.{json,jsonc}`.
 
 `install --opencode` only adds `@use-tusk/opencode-fence` to the `plugin`
 array; OpenCode's npm-package plugin loader does not accept options, so

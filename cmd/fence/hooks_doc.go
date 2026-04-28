@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,9 +39,11 @@ func loadHookConfigDocument(path string, label string) (map[string]any, error) {
 }
 
 // hookConfigHasJSONCComments reports whether the file at path contains JSONC
-// comments that would be stripped on a structured re-marshal. Implemented via
-// byte-for-byte comparison against jsonc.ToJSON output (which replaces comments
-// with whitespace, preserving positions). Returns false on a missing file.
+// comments (line `//` or block `/* */`) that would be stripped on a structured
+// re-marshal. Returns false on a missing file. Trailing commas — also legal
+// in JSONC and also stripped on re-marshal — do not count as comments here;
+// the caller's warning is specifically about losing user-authored prose, not
+// about losing trailing commas the marshaller would re-add anyway.
 func hookConfigHasJSONCComments(path string) (bool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // user-provided path is intentional
 	if err != nil {
@@ -52,15 +53,44 @@ func hookConfigHasJSONCComments(path string) (bool, error) {
 		return false, err
 	}
 
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return false, nil
-	}
+	return containsJSONCCommentBytes(data), nil
+}
 
-	stripped := jsonc.ToJSON(data)
-	if !bytes.Equal(data, stripped) {
-		return true, nil
+// containsJSONCCommentBytes scans data for an unescaped `//` line comment or
+// `/* */` block comment outside of any string literal. Backslash escaping
+// inside strings is honored, so comment sequences inside e.g. "x\\" or
+// "//not-a-comment" do not count.
+func containsJSONCCommentBytes(data []byte) bool {
+	var (
+		inString bool
+		escape   bool
+	)
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c == '/' && i+1 < len(data) {
+			if data[i+1] == '/' || data[i+1] == '*' {
+				return true
+			}
+		}
 	}
-	return false, nil
+	return false
 }
 
 func writeHookConfigDocument(path string, doc map[string]any, label string) error {
