@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -276,10 +277,11 @@ func NewReverseBridge(exposures []ExposedPort, debug bool) (*ReverseBridge, erro
 		bridge.Exposures = append(bridge.Exposures, ExposedPort{BindAddress: bind, Port: port})
 		bridge.SocketPaths = append(bridge.SocketPaths, socketPath)
 
-		// Start reverse bridge: TCP listen on bind:port -> Unix socket
-		// The sandbox will create the Unix socket with UNIX-LISTEN
-		// We use retry to wait for the socket to be created by the sandbox
-		listenSpec := fmt.Sprintf("TCP-LISTEN:%d,bind=%s,fork,reuseaddr", port, bind)
+		// Start reverse bridge: TCP listen on bind:port -> Unix socket.
+		// UNIX-CONNECT retries until the sandbox creates the UNIX-LISTEN socket.
+		// We pick TCP4-LISTEN / TCP6-LISTEN explicitly because socat 1.7.x
+		// (still on older distros) auto-detects address family inconsistently.
+		listenSpec := fmt.Sprintf("%s:%d,bind=%s,fork,reuseaddr", socatTCPListenVerb(bind), port, bind)
 		args := []string{
 			listenSpec,
 			fmt.Sprintf("UNIX-CONNECT:%s,retry=50,interval=0.1", socketPath),
@@ -310,6 +312,16 @@ func formatExposures(exposures []ExposedPort) string {
 		parts[i] = fmt.Sprintf("%s:%d", e.BindAddress, e.Port)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// socatTCPListenVerb returns TCP6-LISTEN for IPv6 literals, TCP4-LISTEN
+// otherwise (including non-IP fallback). Naming the family avoids socat 1.7.x
+// auto-detection quirks, especially for IPv6 binds.
+func socatTCPListenVerb(bind string) string {
+	if ip := net.ParseIP(bind); ip != nil && ip.To4() == nil {
+		return "TCP6-LISTEN"
+	}
+	return "TCP4-LISTEN"
 }
 
 // Cleanup stops the reverse bridge processes and removes socket files.

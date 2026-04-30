@@ -115,6 +115,33 @@ func TestNewReverseBridge_ExplicitWildcardBindOptIn(t *testing.T) {
 	}
 }
 
+// TestNewReverseBridge_IPv6LoopbackBindOptIn verifies that an IPv6 bind
+// address routes through TCP6-LISTEN and produces a working [::1]:PORT
+// listener. socat 1.7.x has historically been picky about IPv6 family
+// auto-detection on TCP-LISTEN; this test pins down the expected behavior
+// for the fence-on-IPv6 path.
+func TestNewReverseBridge_IPv6LoopbackBindOptIn(t *testing.T) {
+	if _, err := exec.LookPath("socat"); err != nil {
+		t.Skip("socat not installed; skipping")
+	}
+	if _, err := exec.LookPath("ss"); err != nil {
+		t.Skip("ss not installed; skipping")
+	}
+
+	port := findFreeTCPPort(t)
+	bridge, err := NewReverseBridge([]ExposedPort{{BindAddress: "::1", Port: port}}, false)
+	if err != nil {
+		t.Fatalf("NewReverseBridge: %v", err)
+	}
+	defer bridge.Cleanup()
+
+	got := listenAddrFor(t, port, time.Now().Add(2*time.Second))
+	// `ss` renders IPv6 literals with brackets in the Local Address column.
+	if got != "[::1]" {
+		t.Fatalf("expected reverse bridge to bind [::1], got %q (port %d)", got, port)
+	}
+}
+
 // TestNewReverseBridge_EmptyExposuresIsNoop verifies the early-return path
 // for callers that pass nothing to expose.
 func TestNewReverseBridge_EmptyExposuresIsNoop(t *testing.T) {
@@ -124,5 +151,29 @@ func TestNewReverseBridge_EmptyExposuresIsNoop(t *testing.T) {
 	}
 	if bridge != nil {
 		t.Errorf("NewReverseBridge(nil) = %+v, want nil", bridge)
+	}
+}
+
+func TestSocatTCPListenVerb(t *testing.T) {
+	cases := []struct {
+		bind string
+		want string
+	}{
+		{"127.0.0.1", "TCP4-LISTEN"},
+		{"0.0.0.0", "TCP4-LISTEN"},
+		{"192.168.1.10", "TCP4-LISTEN"},
+		{"::1", "TCP6-LISTEN"},
+		{"::", "TCP6-LISTEN"},
+		{"2001:db8::1", "TCP6-LISTEN"},
+		{"", "TCP4-LISTEN"},          // fallback for non-IP / empty
+		{"localhost", "TCP4-LISTEN"}, // CLI rejects this earlier; defensively returns v4
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.bind, func(t *testing.T) {
+			if got := socatTCPListenVerb(tc.bind); got != tc.want {
+				t.Errorf("socatTCPListenVerb(%q) = %q, want %q", tc.bind, got, tc.want)
+			}
+		})
 	}
 }
