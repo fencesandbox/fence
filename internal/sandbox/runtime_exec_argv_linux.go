@@ -255,17 +255,27 @@ func RunLinuxArgvExecRunnerFromEnv() (int, error) {
 	}
 
 	if !waitArrived {
-		// Supervisor exited first; tear down bwrap if it hasn't noticed.
-		if cmd.Process != nil {
-			_ = killProcessGroup(cmd.Process.Pid, syscall.SIGTERM)
-		}
+		// Supervisor exited first. If it returned cleanly, that almost
+		// always means all sandboxed tracees have exited (the listener
+		// fd reached POLLHUP), and bwrap is reaping its way to exit
+		// right behind us; just wait briefly. Only escalate if the
+		// supervisor failed (decision error) or bwrap is still around
+		// after the drain window - in either case we have no useful
+		// reason to keep the sandbox alive.
 		select {
 		case waitErr = <-waitErrCh:
 		case <-time.After(linuxArgvExecSupervisorDrainTimeout):
 			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
+				_ = killProcessGroup(cmd.Process.Pid, syscall.SIGTERM)
 			}
-			waitErr = <-waitErrCh
+			select {
+			case waitErr = <-waitErrCh:
+			case <-time.After(linuxArgvExecSupervisorDrainTimeout):
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+				waitErr = <-waitErrCh
+			}
 		}
 	}
 
