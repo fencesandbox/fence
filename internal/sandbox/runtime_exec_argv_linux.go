@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -297,70 +296,20 @@ func RunLinuxArgvExecRunnerFromEnv() (int, error) {
 	return 0, nil
 }
 
-func killProcessGroup(leaderPid int, sig syscall.Signal) error {
-	if leaderPid <= 0 {
-		return nil
-	}
-	return syscall.Kill(-leaderPid, sig)
-}
-
-// startLinuxArgvExecSignalForwarder mirrors the escalation in
-// startCommandWithSignalProxy (cmd/fence/main.go):
-//   - SIGWINCH: forward to bwrap (TUI resize), never escalate.
-//   - 1st SIGINT/SIGTERM: forward to bwrap so the agent's TUI can handle
-//     it (e.g. single Ctrl+C as cancel, not quit).
-//   - 2nd: pgrp-broadcast + shutdown.Begin().
-//   - 3rd+: SIGKILL bwrap + shutdown.Begin().
-//
-// shutdown may be nil in tests.
+// startLinuxArgvExecSignalForwarder wires bwrap into the shared
+// SignalForwarder. shutdown may be nil in tests; when present its
+// Begin() is fired on every escalation step so the supervisor
+// goroutine wakes promptly.
 func startLinuxArgvExecSignalForwarder(cmd *exec.Cmd, shutdown *argvRunnerShutdown) func() {
-	sigChan := make(chan os.Signal, 1)
-	done := make(chan struct{})
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
-
-	go func() {
-		sigCount := 0
-		for {
-			select {
-			case <-done:
-				return
-			case sig := <-sigChan:
-				if cmd.Process == nil {
-					continue
-				}
-				forwarded, ok := sig.(syscall.Signal)
-				if !ok {
-					continue
-				}
-
-				if forwarded == syscall.SIGWINCH {
-					_ = cmd.Process.Signal(forwarded)
-					continue
-				}
-
-				sigCount++
-				switch sigCount {
-				case 1:
-					_ = cmd.Process.Signal(forwarded)
-				case 2:
-					_ = killProcessGroup(cmd.Process.Pid, forwarded)
-					if shutdown != nil {
-						shutdown.Begin()
-					}
-				default:
-					_ = cmd.Process.Kill()
-					if shutdown != nil {
-						shutdown.Begin()
-					}
-				}
-			}
-		}
-	}()
-
-	return func() {
-		signal.Stop(sigChan)
-		close(done)
+	var onEscalate func()
+	if shutdown != nil {
+		onEscalate = shutdown.Begin
 	}
+	return (&SignalForwarder{
+		Cmd:           cmd,
+		PgrpBroadcast: true,
+		OnEscalate:    onEscalate,
+	}).Start()
 }
 
 func recvLinuxArgvExecHandshake(conn net.Conn) (int, error) {

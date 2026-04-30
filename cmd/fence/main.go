@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/Use-Tusk/fence/internal/config"
@@ -488,51 +487,15 @@ func shouldManageHostTTYForeground(isTTY bool, usePTY bool) bool {
 }
 
 func startCommandWithSignalProxy(execCmd *exec.Cmd) (func(), error) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
-	done := make(chan struct{})
-	var cleanupOnce sync.Once
-
 	if err := execCmd.Start(); err != nil {
-		signal.Stop(sigChan)
 		return nil, err
 	}
-
-	go func() {
-		sigCount := 0
-		for {
-			select {
-			case <-done:
-				return
-			case sig := <-sigChan:
-				if execCmd.Process == nil {
-					continue
-				}
-
-				// Best-effort: forward SIGWINCH to the child. On Linux with bwrap
-				// --new-session, interactive TUIs generally need PTY relay instead.
-				if sig == syscall.SIGWINCH {
-					_ = execCmd.Process.Signal(syscall.SIGWINCH)
-					continue
-				}
-
-				// First signal: graceful termination; second signal: force kill
-				sigCount++
-				if sigCount >= 2 {
-					_ = execCmd.Process.Kill()
-				} else {
-					_ = execCmd.Process.Signal(sig)
-				}
-			}
-		}
-	}()
-
-	return func() {
-		cleanupOnce.Do(func() {
-			signal.Stop(sigChan)
-			close(done)
-		})
-	}, nil
+	// Outer fence does not pgrp-broadcast on the 2nd signal: bwrap is
+	// not always placed in its own pgrp here (only when there is a
+	// controlling TTY; see configureHostTTYChildProcessGroup), so a
+	// pgrp send could either be a no-op or hit our own group.
+	stop := (&sandbox.SignalForwarder{Cmd: execCmd}).Start()
+	return stop, nil
 }
 
 // newImportCmd creates the import subcommand.
