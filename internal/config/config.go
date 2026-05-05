@@ -307,12 +307,14 @@ func legacyConfigPaths(goos, home string) []string {
 	paths := make([]string, 0, 4)
 	if goos == "darwin" {
 		appSupport := filepath.Join(home, "Library", "Application Support", "fence")
-		paths = append(paths,
+		paths = append(
+			paths,
 			filepath.Join(appSupport, "fence.jsonc"),
 			filepath.Join(appSupport, "fence.json"),
 		)
 	}
-	return append(paths,
+	return append(
+		paths,
 		filepath.Join(home, ".fence.jsonc"),
 		filepath.Join(home, ".fence.json"),
 	)

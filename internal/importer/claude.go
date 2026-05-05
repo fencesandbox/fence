@@ -39,7 +39,8 @@ func ClaudeSettingsPaths() []string {
 	// Also check project-level settings in current directory
 	cwd, err := os.Getwd()
 	if err == nil {
-		paths = append(paths,
+		paths = append(
+			paths,
 			filepath.Join(cwd, ".claude", "settings.json"),
 			filepath.Join(cwd, ".claude", "settings.local.json"),
 		)

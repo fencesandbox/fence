@@ -91,7 +91,8 @@ func buildLinuxArgvExecRunnerCommand(fenceExePath string, plan linuxArgvExecPlan
 		return "", fmt.Errorf("failed to encode Linux argv exec plan: %w", err)
 	}
 	runner := ShellQuote([]string{fenceExePath, linuxArgvExecRunnerMode})
-	return fmt.Sprintf("%s=%s exec %s",
+	return fmt.Sprintf(
+		"%s=%s exec %s",
 		fenceLinuxArgvExecPlanEnv,
 		ShellQuoteSingle(string(planJSON)),
 		runner,
@@ -644,7 +645,8 @@ func evaluateLinuxRuntimeExecDecision(
 	if err != nil {
 		return linuxRuntimeExecDecision{
 			Allow: false,
-			Message: fmt.Sprintf("[fence:linux] Runtime exec policy blocked pid=%d: unable to inspect %s: %v",
+			Message: fmt.Sprintf(
+				"[fence:linux] Runtime exec policy blocked pid=%d: unable to inspect %s: %v",
 				req.PID,
 				linuxExecSyscallName(req.Data.Nr),
 				err,
@@ -686,7 +688,8 @@ func classifyLinuxRuntimeExecDecision(execPath string, argv []string, cfg *confi
 		}
 		return linuxRuntimeExecDecision{
 			Allow: false,
-			Message: fmt.Sprintf("[fence:linux] Runtime exec policy blocked exec=%q argv=%s matched=%q source=%s",
+			Message: fmt.Sprintf(
+				"[fence:linux] Runtime exec policy blocked exec=%q argv=%s matched=%q source=%s",
 				execPath,
 				quoteRuntimeArgv(argv),
 				match.BlockedPrefix,
@@ -716,7 +719,8 @@ func verifyLinuxRuntimeExecSafeToContinue(
 	if err != nil {
 		return linuxRuntimeExecDecision{
 			Allow: false,
-			Message: fmt.Sprintf("[fence:linux] Runtime exec policy blocked exec=%q argv=%s: unable to verify thread state: %v",
+			Message: fmt.Sprintf(
+				"[fence:linux] Runtime exec policy blocked exec=%q argv=%s: unable to verify thread state: %v",
 				execPath,
 				quoteRuntimeArgv(argv),
 				err,
@@ -729,7 +733,8 @@ func verifyLinuxRuntimeExecSafeToContinue(
 		}
 		return linuxRuntimeExecDecision{
 			Allow: false,
-			Message: fmt.Sprintf("[fence:linux] Runtime exec policy blocked exec=%q argv=%s: multithreaded exec cannot be safely continued in argv mode",
+			Message: fmt.Sprintf(
+				"[fence:linux] Runtime exec policy blocked exec=%q argv=%s: multithreaded exec cannot be safely continued in argv mode",
 				execPath,
 				quoteRuntimeArgv(argv),
 			),

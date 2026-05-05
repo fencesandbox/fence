@@ -44,7 +44,9 @@ func (m *LogMonitor) Start() error {
 	// Build predicate to filter for this session's violations only
 	predicate := fmt.Sprintf(`eventMessage ENDSWITH "%s"`, m.sessionSuffix)
 
-	m.cmd = exec.CommandContext(ctx, "log", "stream", //nolint:gosec // predicate is constructed from trusted session suffix
+	// #nosec G204 -- predicate is constructed from trusted session suffix.
+	m.cmd = exec.CommandContext(
+		ctx, "log", "stream",
 		"--predicate", predicate,
 		"--style", "compact",
 	)

@@ -7,13 +7,13 @@ BINARY_NAME=fence
 BINARY_UNIX=$(BINARY_NAME)_unix
 
 # Tool versions
-GOFUMPT_VERSION=v0.9.2
+GOFUMPT_VERSION=v0.10.0
 GOLANGCI_LINT_VERSION=v2.11.4
 
 # Platform matrix for cross-platform operations
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: all build build-ci build-linux build-darwin test test-ci clean deps install-lint-tools setup setup-ci run fmt lint lint-all lint-platform schema help
+.PHONY: all build build-ci build-linux build-darwin test test-ci clean deps install-lint-tools setup setup-ci run fmt fmt-check lint lint-all lint-platform schema help
 
 all: build
 
@@ -75,6 +75,15 @@ fmt:
 	@echo "📝 Formatting code..."
 	gofumpt -w .
 
+fmt-check:
+	@echo "📝 Checking code formatting..."
+	@files=$$(gofumpt -l .); \
+	if [ -n "$$files" ]; then \
+		echo "$$files"; \
+		echo "Run 'make fmt' to format these files."; \
+		exit 1; \
+	fi
+
 # Base lint command with argument pass-through
 LINT_CMD = CGO_ENABLED=0 GOOS=$(word 1,$(subst /, ,$1)) GOARCH=$(word 2,$(subst /, ,$1)) golangci-lint run --allow-parallel-runners $(ARGS)
 
@@ -122,6 +131,7 @@ help:
 	@echo "  setup-ci           - Setup CI environment"
 	@echo "  run                - Build and run"
 	@echo "  fmt                - Format code"
+	@echo "  fmt-check          - Check code formatting"
 	@echo "  lint               - Lint code for current platform"
 	@echo "  lint-all           - Lint all platforms (use ARGS for options)"
 	@echo "  lint-platform      - Lint specific platform (PLATFORM=os/arch, ARGS for options)"
