@@ -106,7 +106,8 @@ func hermesEmptyPolicyAdvice(hookOptions hookFenceOptions) []string {
 	if len(blocked) == 0 {
 		return nil
 	}
-	blocked = append(blocked,
+	blocked = append(
+		blocked,
 		"To start with sane defaults for messaging-shaped agents, run:",
 		"  fence hooks install --hermes --template hermes",
 	)

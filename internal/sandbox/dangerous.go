@@ -47,7 +47,8 @@ func GetDefaultWritePaths() []string {
 	}
 
 	if home != "" {
-		paths = append(paths,
+		paths = append(
+			paths,
 			filepath.Join(home, ".npm/_logs"),
 			filepath.Join(home, ".fence/debug"),
 		)
