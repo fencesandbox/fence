@@ -1022,15 +1022,15 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 	executableInTmp := strings.HasPrefix(fenceExePath, "/tmp/")
 	executableIsFence := strings.Contains(filepath.Base(fenceExePath), "fence")
 	if useArgvRuntimeExecPolicy {
+		if fenceExePath == "" || !executableIsFence {
+			return "", fmt.Errorf("command.runtimeExecPolicy=%q requires the fence CLI binary (current executable cannot host the runtime supervisor)", config.RuntimeExecPolicyArgv)
+		}
 		if !features.Seccomp.UserNotify {
 			reason := features.Seccomp.UserNotifyError
 			if reason == "" {
 				reason = "not available"
 			}
 			return "", fmt.Errorf("command.runtimeExecPolicy=%q requires Linux seccomp user notification support: %s", config.RuntimeExecPolicyArgv, reason)
-		}
-		if fenceExePath == "" || !executableIsFence {
-			return "", fmt.Errorf("command.runtimeExecPolicy=%q requires the fence CLI binary (current executable cannot host the runtime supervisor)", config.RuntimeExecPolicyArgv)
 		}
 	}
 
