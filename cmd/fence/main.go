@@ -381,6 +381,11 @@ func runCommand(cmd *cobra.Command, args []string) error {
 	// call tcsetpgrp. We ignore SIGTTOU so we don't get stopped when we
 	// later reclaim the foreground (at that point we'll be in the background
 	// process group).
+	var (
+		jobControlEnabled   bool
+		jobControlStdinFd   int
+		jobControlChildPgrp int
+	)
 	if shouldManageHostTTYForeground(isTTY, usePTY) && execCmd.Process != nil {
 		stdinFd := int(os.Stdin.Fd()) // #nosec G115 - fd fits in int on all supported platforms
 
@@ -397,15 +402,28 @@ func runCommand(cmd *cobra.Command, args []string) error {
 			}
 
 			signal.Ignore(syscall.SIGTTOU)
+			// Reset SIGTTOU on every exit path, including a failed TIOCSPGRP
+			// below. SIGTTOU disposition is process-wide, so leaving it ignored
+			// could mask later background terminal writes/ioctls.
+			defer signal.Reset(syscall.SIGTTOU)
 			if err := unix.IoctlSetPointerInt(stdinFd, unix.TIOCSPGRP, childPgrp); err != nil {
 				if debug {
 					fencelog.Printf("[fence] Warning: failed to set child as foreground: %v\n", err)
 				}
+			} else {
+				defer func() {
+					// Only restore if the child's pgrp is still the terminal
+					// foreground. In the Ctrl-Z → bg path the shell reclaims the
+					// TTY after the stop; calling TIOCSPGRP here would steal it
+					// back right before exit, leaving an empty foreground pgrp
+					// and causing the shell's next read to return EIO.
+					setForegroundIfOwner(stdinFd, childPgrp, savedFgPgrp)
+				}()
+
+				jobControlEnabled = true
+				jobControlStdinFd = stdinFd
+				jobControlChildPgrp = childPgrp
 			}
-			defer func() {
-				_ = unix.IoctlSetPointerInt(stdinFd, unix.TIOCSPGRP, savedFgPgrp)
-				signal.Reset(syscall.SIGTTOU)
-			}()
 		}
 	}
 
@@ -428,17 +446,43 @@ func runCommand(cmd *cobra.Command, args []string) error {
 	// For now, filesystem isolation relies on bwrap mount namespaces.
 	// Landlock code exists for future integration (e.g., via a wrapper binary).
 
-	// Wait for command to finish
+	// Wait for command to finish. When we're managing the host TTY
+	// foreground, use a stop-aware wait loop so Ctrl-Z / fg are transparent
+	// (fence itself suspends instead of leaving the user wedged).
+	if jobControlEnabled {
+		code, err := waitWithJobControl(execCmd, jobControlStdinFd, jobControlChildPgrp, debug)
+		// waitWithJobControl has already reaped the child via wait4. Stop the
+		// signal forwarder now (idempotent) so it can't deliver a signal to a
+		// reaped/recycled PID during the remaining deferred cleanup.
+		cleanup()
+		if err != nil {
+			return fmt.Errorf("command failed: %w", err)
+		}
+		exitCode = code
+		return nil
+	}
+
 	if err := execCmd.Wait(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			// Set exit code but don't os.Exit() here - let deferred cleanup run
-			exitCode = exitErr.ExitCode()
+			exitCode = resolveExitCode(exitErr)
 			return nil
 		}
 		return fmt.Errorf("command failed: %w", err)
 	}
 
 	return nil
+}
+
+// resolveExitCode maps an exec.ExitError to fence's exit code. For a child
+// terminated by a signal it uses the shell convention (128+signal), matching
+// the job-control path in waitWithJobControl; exitErr.ExitCode() alone reports
+// -1 for a signaled child.
+func resolveExitCode(exitErr *exec.ExitError) int {
+	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return exitErr.ExitCode()
 }
 
 func presentWrapCommandError(err error) error {
