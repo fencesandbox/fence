@@ -66,19 +66,8 @@ func main() {
 		runLandlockWrapper()
 		return
 	}
-	if len(os.Args) >= 2 && os.Args[1] == "--linux-argv-exec-run" {
-		exitCode, err := sandbox.RunLinuxArgvExecRunnerFromEnv()
-		if err != nil {
-			fencelog.Printf("[fence:linux] %v\n", err)
-		}
-		os.Exit(exitCode)
-	}
-	if len(os.Args) >= 2 && os.Args[1] == "--linux-argv-exec-shim" {
-		exitCode, err := sandbox.RunLinuxArgvExecShim(os.Args[2:])
-		if err != nil {
-			fencelog.Printf("[fence:linux] %v\n", err)
-		}
-		os.Exit(exitCode)
+	if runLinuxInternalHelperMode(os.Args) {
+		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == claudePreToolUseMode {
 		if err := runClaudePreToolUseMode(); err != nil {
