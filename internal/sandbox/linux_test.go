@@ -325,6 +325,48 @@ func TestLinuxDefaultCrossMountReadablePaths(t *testing.T) {
 	}
 }
 
+func TestLinuxReadableHostSubmountRootsFromMountInfo(t *testing.T) {
+	mountInfo := strings.Join([]string{
+		"36 25 8:1 / / rw,relatime - ext4 /dev/root rw",
+		"37 36 8:2 / /home rw,relatime - ext4 /dev/sda2 rw",
+		"38 36 0:22 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw",
+		"39 36 0:23 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw",
+		"40 36 8:3 / /var/lib rw,relatime - xfs /dev/sdb rw",
+		"41 37 8:4 / /home/user/.cache rw,relatime - btrfs /dev/sdc rw",
+		`42 36 8:5 / /mnt/with\040space rw,relatime - ext4 /dev/sdd rw`,
+	}, "\n")
+
+	got := linuxReadableHostSubmountRootsFromMountInfo(mountInfo)
+	want := []string{"/home", "/mnt/with space", "/var/lib", "/home/user/.cache"}
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("linuxReadableHostSubmountRootsFromMountInfo() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLinuxContainingPreservedSubmountRootChoosesDeepest(t *testing.T) {
+	preserved := map[string]bool{
+		"/home":                  true,
+		"/home/user/.cache":      true,
+		"/mnt/with space":        true,
+		"/mnt/with space/nested": true,
+	}
+
+	got, ok := linuxContainingPreservedSubmountRoot("/home/user/.cache/tool/state", preserved)
+	if !ok || got != "/home/user/.cache" {
+		t.Fatalf("expected deepest /home submount, got %q ok=%v", got, ok)
+	}
+
+	got, ok = linuxContainingPreservedSubmountRoot("/mnt/with space/nested/file", preserved)
+	if !ok || got != "/mnt/with space/nested" {
+		t.Fatalf("expected deepest escaped-path submount, got %q ok=%v", got, ok)
+	}
+
+	if got, ok := linuxContainingPreservedSubmountRoot("/homebrew/cache", preserved); ok {
+		t.Fatalf("did not expect prefix-only match to count, got %q", got)
+	}
+}
+
 func TestLandlockHandledAccessFS(t *testing.T) {
 	t.Run("includes ioctl_dev on ABI v5+", func(t *testing.T) {
 		ruleset := &LandlockRuleset{abiVersion: 5}

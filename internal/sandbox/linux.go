@@ -149,6 +149,118 @@ func linuxDefaultCrossMountReadablePaths() []string {
 	return append(paths, getDefaultUserToolingPaths(home)...)
 }
 
+type linuxMountInfoEntry struct {
+	MountPoint string
+	FSType     string
+}
+
+func parseLinuxMountInfoLine(line string) (linuxMountInfoEntry, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 10 {
+		return linuxMountInfoEntry{}, false
+	}
+
+	separator := slices.Index(fields, "-")
+	if separator < 0 || separator+1 >= len(fields) || len(fields) <= 4 {
+		return linuxMountInfoEntry{}, false
+	}
+
+	return linuxMountInfoEntry{
+		MountPoint: linuxUnescapeMountInfoPath(fields[4]),
+		FSType:     fields[separator+1],
+	}, true
+}
+
+func linuxUnescapeMountInfoPath(path string) string {
+	return strings.NewReplacer(
+		`\040`, " ",
+		`\011`, "\t",
+		`\012`, "\n",
+		`\134`, `\`,
+	).Replace(path)
+}
+
+func linuxReadableHostSubmountRootsFromMountInfo(mountInfo string) []string {
+	seen := make(map[string]bool)
+	var roots []string
+
+	for _, line := range strings.Split(mountInfo, "\n") {
+		entry, ok := parseLinuxMountInfoLine(line)
+		if !ok || !linuxShouldPreserveHostSubmount(entry) {
+			continue
+		}
+		mountPoint := filepath.Clean(entry.MountPoint)
+		if seen[mountPoint] {
+			continue
+		}
+		seen[mountPoint] = true
+		roots = append(roots, mountPoint)
+	}
+
+	slices.SortFunc(roots, func(a, b string) int {
+		depthA := linuxLateMountDepth(a)
+		depthB := linuxLateMountDepth(b)
+		if depthA != depthB {
+			return depthA - depthB
+		}
+		return strings.Compare(a, b)
+	})
+
+	return roots
+}
+
+func linuxReadableHostSubmountRoots() []string {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return nil
+	}
+	return linuxReadableHostSubmountRootsFromMountInfo(string(data))
+}
+
+func linuxShouldPreserveHostSubmount(entry linuxMountInfoEntry) bool {
+	mountPoint := filepath.Clean(entry.MountPoint)
+	if mountPoint == "" || mountPoint == "." || mountPoint == "/" || !strings.HasPrefix(mountPoint, "/") {
+		return false
+	}
+
+	for _, controlled := range []string{"/dev", "/proc", "/sys", "/run", "/tmp"} {
+		if linuxPathContains(controlled, mountPoint) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func appendLinuxReadableHostSubmounts(bwrapArgs []string, debug bool) ([]string, map[string]bool) {
+	preserved := make(map[string]bool)
+	for _, root := range linuxReadableHostSubmountRoots() {
+		if !fileExists(root) || sameDevice("/", root) {
+			continue
+		}
+		bwrapArgs = append(bwrapArgs, "--ro-bind", root, root)
+		preserved[root] = true
+		if debug {
+			fencelog.Printf("[fence:linux] Preserving host submount read-only: %s\n", root)
+		}
+	}
+	return bwrapArgs, preserved
+}
+
+func linuxContainingPreservedSubmountRoot(path string, preserved map[string]bool) (string, bool) {
+	path = filepath.Clean(path)
+	var best string
+	for root := range preserved {
+		if !linuxPathContains(root, path) {
+			continue
+		}
+		if best == "" || linuxLateMountDepth(root) > linuxLateMountDepth(best) {
+			best = root
+		}
+	}
+	return best, best != ""
+}
+
 // NewLinuxBridge creates Unix socket bridges to the proxy servers.
 // This allows sandboxed processes to communicate with the host's proxy (outbound).
 func NewLinuxBridge(httpProxyPort, socksProxyPort int, debug bool) (*LinuxBridge, error) {
@@ -1268,6 +1380,14 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 		}
 	}
 
+	preservedHostSubmounts := make(map[string]bool)
+	if !defaultDenyRead {
+		// Normal mode promises a broad read-only host view. Some private host
+		// submounts do not appear through --ro-bind / /, so restore ordinary
+		// mount roots before writable and deny overlays refine the policy.
+		bwrapArgs, preservedHostSubmounts = appendLinuxReadableHostSubmounts(bwrapArgs, opts.Debug)
+	}
+
 	writablePaths := make(map[string]bool)
 
 	// Add default write paths (system paths needed for operation)
@@ -1361,6 +1481,18 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, bridge *Lin
 			if !fileExists(p) || sameDevice("/", p) || crossMountBound[p] {
 				continue
 			}
+
+			if root, ok := linuxContainingPreservedSubmountRoot(p, preservedHostSubmounts); ok {
+				crossMountBound[p] = true
+				if crossMountWritable[p] {
+					bwrapArgs = append(bwrapArgs, "--bind", p, p)
+					if opts.Debug {
+						fencelog.Printf("[fence:linux] Cross-mount writable bind under preserved submount %s: %s\n", root, p)
+					}
+				}
+				continue
+			}
+
 			crossMountBound[p] = true
 
 			// Use the same cross-mount bind technique as the resolv.conf fix:
