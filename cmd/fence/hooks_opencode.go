@@ -10,7 +10,7 @@ import (
 )
 
 // opencodePreToolUseMode is the helper-mode flag invoked by the OpenCode
-// plugin at https://github.com/Use-Tusk/opencode-fence. It reads a Claude-
+// plugin at https://github.com/fencesandbox/opencode-fence. It reads a Claude-
 // shaped PreToolUse envelope on stdin and emits a flat decision response on
 // stdout (see opencodePreToolUseResponse).
 const opencodePreToolUseMode = "--opencode-pre-tool-use"

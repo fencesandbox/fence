@@ -58,7 +58,7 @@ Examples:
 				return writeCursorHooksConfigWithOptions(cmd.OutOrStdout(), resolvedHookOptions)
 			case opencode:
 				if resolvedHookOptions.SettingsPath != "" || resolvedHookOptions.TemplateName != "" {
-					return fmt.Errorf("--settings/--template are not supported with --opencode (OpenCode plugins do not accept options through the plugin array; use a local plugin shim instead, see https://github.com/Use-Tusk/opencode-fence)")
+					return fmt.Errorf("--settings/--template are not supported with --opencode (OpenCode plugins do not accept options through the plugin array; use a local plugin shim instead, see https://github.com/fencesandbox/opencode-fence)")
 				}
 				return writeOpencodeHooksConfig(cmd.OutOrStdout())
 			case hermes:
@@ -165,7 +165,7 @@ Examples:
 				return nil
 			case opencode:
 				if resolvedHookOptions.SettingsPath != "" || resolvedHookOptions.TemplateName != "" {
-					return fmt.Errorf("--settings/--template are not supported with --opencode (OpenCode plugins do not accept options through the plugin array; use a local plugin shim instead, see https://github.com/Use-Tusk/opencode-fence)")
+					return fmt.Errorf("--settings/--template are not supported with --opencode (OpenCode plugins do not accept options through the plugin array; use a local plugin shim instead, see https://github.com/fencesandbox/opencode-fence)")
 				}
 				targetPath := path
 				if targetPath == "" {

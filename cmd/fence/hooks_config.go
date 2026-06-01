@@ -189,7 +189,7 @@ func windsurfHookCommandWithOptions(hookOptions hookFenceOptions) string {
 	return sandbox.ShellQuote(args)
 }
 
-const opencodePluginPackageName = "@use-tusk/opencode-fence"
+const opencodePluginPackageName = "@fencesandbox/opencode-fence"
 
 func buildOpencodeConfigSnippet() map[string]any {
 	return map[string]any{

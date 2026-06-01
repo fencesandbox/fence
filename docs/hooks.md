@@ -90,7 +90,7 @@ Fence handles either Cursor or Claude hook payloads.
 
 OpenCode loads plugins from npm packages listed in its `plugin` array, so the
 Fence integration ships as the
-[`@use-tusk/opencode-fence`](https://github.com/Use-Tusk/opencode-fence)
+[`@fencesandbox/opencode-fence`](https://github.com/fencesandbox/opencode-fence)
 plugin. It hooks `tool.execute.before` for the `bash` tool and calls
 `fence --opencode-pre-tool-use`:
 
@@ -104,13 +104,13 @@ Default file: `~/.config/opencode/opencode.jsonc` if it exists, otherwise
 `~/.config/opencode/opencode.json` (created on first install). Override with
 `--file` to target a project-local `opencode.{json,jsonc}`.
 
-`install --opencode` only adds `@use-tusk/opencode-fence` to the `plugin`
+`install --opencode` only adds `@fencesandbox/opencode-fence` to the `plugin`
 array; OpenCode's npm-package plugin loader does not accept options, so
 `--settings` and `--template` are not supported with `--opencode`. To pin a
 specific config or template, write a local plugin shim under
 `~/.config/opencode/plugins/` that constructs `FencePlugin({...})` directly.
 See the plugin's
-[README](https://github.com/Use-Tusk/opencode-fence#configuration).
+[README](https://github.com/fencesandbox/opencode-fence#configuration).
 
 > [!NOTE]
 > **OpenCode `!`-prefixed commands bypass the plugin.** OpenCode's plugin
@@ -223,7 +223,7 @@ yourself:
 
 ```ts
 // ~/.config/opencode/plugins/fence.ts
-import { createFencePlugin } from "@use-tusk/opencode-fence/factory";
+import { createFencePlugin } from "@fencesandbox/opencode-fence/factory";
 
 export const Fence = createFencePlugin({
   settingsPath: "/path/to/fence.json",
@@ -231,7 +231,7 @@ export const Fence = createFencePlugin({
 });
 ```
 
-If you use this route, remove `@use-tusk/opencode-fence` from
+If you use this route, remove `@fencesandbox/opencode-fence` from
 `opencode.json`'s `plugin` array to avoid registering the plugin twice.
 
 ## Other Agents
