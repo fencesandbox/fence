@@ -60,9 +60,7 @@ jobs:
         run: make fmt-check
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          install-mode: "none"
+        run: make lint
 
   test-linux:
     name: Test (Linux)
