@@ -739,13 +739,15 @@ func TestGenerateWriteRules_UsesWorkspaceScopedMandatoryDenyPatterns(t *testing.
 	rules := generateWriteRules([]string{workspace}, nil, false, workspace, "test-log")
 	joinedRules := strings.Join(rules, "\n")
 
-	scopedRegex := escapePath(GlobToRegex(filepath.Join(ResolveSandboxWorkingDir(workspace), "**", ".idea", "**")))
-	if !strings.Contains(joinedRules, "(regex "+scopedRegex+")") {
+	scopedRegex := GlobToRegex(filepath.Join(ResolveSandboxWorkingDir(workspace), "**", ".idea", "**"))
+	expectedRule := `(regex #"` + strings.ReplaceAll(scopedRegex, `"`, `\"`) + `")`
+	if !strings.Contains(joinedRules, expectedRule) {
 		t.Fatalf("expected scoped .idea deny regex in rules, got:\n%s", joinedRules)
 	}
 
-	unscopedRegex := escapePath(GlobToRegex("**/.idea/**"))
-	if strings.Contains(joinedRules, "(regex "+unscopedRegex+")") {
+	unscopedRegex := GlobToRegex("**/.idea/**")
+	unexpectedRule := `(regex #"` + strings.ReplaceAll(unscopedRegex, `"`, `\"`) + `")`
+	if strings.Contains(joinedRules, unexpectedRule) {
 		t.Fatalf("unexpected unscoped .idea deny regex in rules:\n%s", joinedRules)
 	}
 }
@@ -802,6 +804,30 @@ func TestWrapCommandMacOS_ExposedHostPathsGrantReadAndWrite(t *testing.T) {
 	}
 	if strings.Contains(cmd, writeRO) {
 		t.Errorf("read-only exposure must NOT produce a file-write* rule for %s, profile:\n%s", roResolved, cmd)
+	}
+}
+
+// TestMacOS_DenyReadRegexFormat verifies that filesystem regex rules use the
+// raw regex literal format (#"...") required for robust precedence and
+// backslash handling in macOS Seatbelt.
+func TestMacOS_DenyReadRegexFormat(t *testing.T) {
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DefaultDenyRead: true,
+			AllowRead:       []string{"."},
+			DenyRead:        []string{"**/.env"},
+		},
+	}
+
+	params := buildMacOSParamsForTest(cfg)
+	profile := GenerateSandboxProfile(params)
+
+	// We expect the RAW regex literal format #"..."
+	expectedDenyRule := `(deny file-read*
+  (regex #"^(.*/)?\.env$")`
+
+	if !strings.Contains(profile, expectedDenyRule) {
+		t.Errorf("Profile does not use the required raw regex literal format (#\"...\") for deny rules.\nGot:\n%s", profile)
 	}
 }
 
