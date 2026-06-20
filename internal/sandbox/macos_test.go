@@ -814,6 +814,39 @@ func TestMacOS_DenyReadRegexFormat(t *testing.T) {
 	cfg := &config.Config{
 		Filesystem: config.FilesystemConfig{
 			DefaultDenyRead: true,
+			AllowRead:       []string{"**/.env"},
+			DenyRead:        []string{"**/.env.local"},
+		},
+	}
+
+	params := buildMacOSParamsForTest(cfg)
+	profile := GenerateSandboxProfile(params)
+
+	// We expect the RAW regex literal format #"..."
+	expectedAllowRule := `(allow file-read-data
+  (regex #"^(.*/)?\.env$")`
+
+	expectedDenyRule := `(deny file-read*
+  (regex #"^(.*/)?\.env\.local$")`
+
+	if !strings.Contains(profile, expectedAllowRule) {
+		t.Errorf("Profile does not use the required raw regex literal format (#\"...\") for allow rules.\nGot:\n%s", profile)
+	}
+
+	if !strings.Contains(profile, expectedDenyRule) {
+		t.Errorf("Profile does not use the required raw regex literal format (#\"...\") for deny rules.\nGot:\n%s", profile)
+	}
+}
+
+// TestMacOS_DefaultDenyReadPrecedenceRegression verifies that in defaultDenyRead mode,
+// denied paths also produce explicit, specific deny rules for both file-read-data
+// and file-read-metadata. In macOS Seatbelt, a specific allow rule (such as file-read-data)
+// is not overridden by a general wildcard deny rule (such as file-read*). Thus, specific
+// deny rules are necessary to prevent precedence-based bypasses.
+func TestMacOS_DefaultDenyReadPrecedenceRegression(t *testing.T) {
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DefaultDenyRead: true,
 			AllowRead:       []string{"."},
 			DenyRead:        []string{"**/.env"},
 		},
@@ -822,12 +855,19 @@ func TestMacOS_DenyReadRegexFormat(t *testing.T) {
 	params := buildMacOSParamsForTest(cfg)
 	profile := GenerateSandboxProfile(params)
 
-	// We expect the RAW regex literal format #"..."
-	expectedDenyRule := `(deny file-read*
-  (regex #"^(.*/)?\.env$")`
+	expectedRules := []string{
+		`(deny file-read*
+  (regex #"^(.*/)?\.env$")`,
+		`(deny file-read-data
+  (regex #"^(.*/)?\.env$")`,
+		`(deny file-read-metadata
+  (regex #"^(.*/)?\.env$")`,
+	}
 
-	if !strings.Contains(profile, expectedDenyRule) {
-		t.Errorf("Profile does not use the required raw regex literal format (#\"...\") for deny rules.\nGot:\n%s", profile)
+	for _, expectedRule := range expectedRules {
+		if !strings.Contains(profile, expectedRule) {
+			t.Errorf("Expected profile to contain specific deny rule:\n%s\n\nGot profile:\n%s", expectedRule, profile)
+		}
 	}
 }
 
