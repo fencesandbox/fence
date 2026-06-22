@@ -739,13 +739,15 @@ func TestGenerateWriteRules_UsesWorkspaceScopedMandatoryDenyPatterns(t *testing.
 	rules := generateWriteRules([]string{workspace}, nil, false, workspace, "test-log")
 	joinedRules := strings.Join(rules, "\n")
 
-	scopedRegex := escapePath(GlobToRegex(filepath.Join(ResolveSandboxWorkingDir(workspace), "**", ".idea", "**")))
-	if !strings.Contains(joinedRules, "(regex "+scopedRegex+")") {
+	scopedRegex := GlobToRegex(filepath.Join(ResolveSandboxWorkingDir(workspace), "**", ".idea", "**"))
+	expectedRule := `(regex #"` + strings.ReplaceAll(scopedRegex, `"`, `\"`) + `")`
+	if !strings.Contains(joinedRules, expectedRule) {
 		t.Fatalf("expected scoped .idea deny regex in rules, got:\n%s", joinedRules)
 	}
 
-	unscopedRegex := escapePath(GlobToRegex("**/.idea/**"))
-	if strings.Contains(joinedRules, "(regex "+unscopedRegex+")") {
+	unscopedRegex := GlobToRegex("**/.idea/**")
+	unexpectedRule := `(regex #"` + strings.ReplaceAll(unscopedRegex, `"`, `\"`) + `")`
+	if strings.Contains(joinedRules, unexpectedRule) {
 		t.Fatalf("unexpected unscoped .idea deny regex in rules:\n%s", joinedRules)
 	}
 }
@@ -802,6 +804,70 @@ func TestWrapCommandMacOS_ExposedHostPathsGrantReadAndWrite(t *testing.T) {
 	}
 	if strings.Contains(cmd, writeRO) {
 		t.Errorf("read-only exposure must NOT produce a file-write* rule for %s, profile:\n%s", roResolved, cmd)
+	}
+}
+
+// TestMacOS_DenyReadRegexFormat verifies that filesystem regex rules use the
+// raw regex literal format (#"...") required for robust precedence and
+// backslash handling in macOS Seatbelt.
+func TestMacOS_DenyReadRegexFormat(t *testing.T) {
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DefaultDenyRead: true,
+			AllowRead:       []string{"**/.env"},
+			DenyRead:        []string{"**/.env.local"},
+		},
+	}
+
+	params := buildMacOSParamsForTest(cfg)
+	profile := GenerateSandboxProfile(params)
+
+	// We expect the RAW regex literal format #"..."
+	expectedAllowRule := `(allow file-read-data
+  (regex #"^(.*/)?\.env$")`
+
+	expectedDenyRule := `(deny file-read*
+  (regex #"^(.*/)?\.env\.local$")`
+
+	if !strings.Contains(profile, expectedAllowRule) {
+		t.Errorf("Profile does not use the required raw regex literal format (#\"...\") for allow rules.\nGot:\n%s", profile)
+	}
+
+	if !strings.Contains(profile, expectedDenyRule) {
+		t.Errorf("Profile does not use the required raw regex literal format (#\"...\") for deny rules.\nGot:\n%s", profile)
+	}
+}
+
+// TestMacOS_DefaultDenyReadPrecedenceRegression verifies that in defaultDenyRead mode,
+// denied paths also produce explicit, specific deny rules for both file-read-data
+// and file-read-metadata. In macOS Seatbelt, a specific allow rule (such as file-read-data)
+// is not overridden by a general wildcard deny rule (such as file-read*). Thus, specific
+// deny rules are necessary to prevent precedence-based bypasses.
+func TestMacOS_DefaultDenyReadPrecedenceRegression(t *testing.T) {
+	cfg := &config.Config{
+		Filesystem: config.FilesystemConfig{
+			DefaultDenyRead: true,
+			AllowRead:       []string{"."},
+			DenyRead:        []string{"**/.env"},
+		},
+	}
+
+	params := buildMacOSParamsForTest(cfg)
+	profile := GenerateSandboxProfile(params)
+
+	expectedRules := []string{
+		`(deny file-read*
+  (regex #"^(.*/)?\.env$")`,
+		`(deny file-read-data
+  (regex #"^(.*/)?\.env$")`,
+		`(deny file-read-metadata
+  (regex #"^(.*/)?\.env$")`,
+	}
+
+	for _, expectedRule := range expectedRules {
+		if !strings.Contains(profile, expectedRule) {
+			t.Errorf("Expected profile to contain specific deny rule:\n%s\n\nGot profile:\n%s", expectedRule, profile)
+		}
 	}
 }
 

@@ -200,6 +200,13 @@ func writeMachPermissionRules(profile *strings.Builder, operation string, patter
 	}
 }
 
+func buildFileSystemRegexRule(operation, regex, logTag string) string {
+	// Seatbelt #"..." is a raw regex literal. We need to escape any double
+	// quotes inside the regex string.
+	escapedRegex := strings.ReplaceAll(regex, `"`, `\"`)
+	return fmt.Sprintf("(%s\n  (regex #\"%s\")\n  (with message %q))", operation, escapedRegex, logTag)
+}
+
 // generateReadRules generates filesystem read rules for the sandbox profile.
 func generateReadRules(defaultDenyRead, strictDenyRead bool, allowPaths, denyPaths []string, logTag string) []string {
 	builder := newSeatbeltRuleBuilder()
@@ -230,10 +237,7 @@ func generateReadRules(defaultDenyRead, strictDenyRead bool, allowPaths, denyPat
 
 			if ContainsGlobChars(normalized) {
 				regex := GlobToRegex(normalized)
-				builder.addRule(
-					"(allow file-read-data",
-					fmt.Sprintf("  (regex %s))", escapePath(regex)),
-				)
+				builder.addRule(buildFileSystemRegexRule("allow file-read-data", regex, ""))
 			} else {
 				builder.addRule(
 					"(allow file-read-data",
@@ -247,26 +251,29 @@ func generateReadRules(defaultDenyRead, strictDenyRead bool, allowPaths, denyPat
 	}
 
 	// In both modes, deny specific paths (denyRead takes precedence).
-	// Note: We use file-read* (not file-read-data) so denied paths are fully hidden.
-	// In defaultDenyRead mode, this overrides the global file-read-metadata allow,
-	// meaning denied paths can't even be listed or stat'd - more restrictive than
-	// default mode where denied paths are still visible but unreadable.
+	// IMPORTANT: On macOS Seatbelt, a specific operation allow (like file-read-data)
+	// is NOT overridden by a wildcard deny (like file-read*). We must explicitly
+	// deny the same specific operations that were allowed.
 	for _, pathPattern := range denyPaths {
 		normalized := NormalizePath(pathPattern)
 
-		if ContainsGlobChars(normalized) {
-			regex := GlobToRegex(normalized)
-			builder.addRule(
-				"(deny file-read*",
-				fmt.Sprintf("  (regex %s)", escapePath(regex)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
-		} else {
-			builder.addRule(
-				"(deny file-read*",
-				fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
+		ops := []string{"file-read*"}
+		if defaultDenyRead {
+			// In defaultDenyRead mode, we explicitly allowed these two classes.
+			ops = append(ops, "file-read-data", "file-read-metadata")
+		}
+
+		for _, op := range ops {
+			if ContainsGlobChars(normalized) {
+				regex := GlobToRegex(normalized)
+				builder.addRule(buildFileSystemRegexRule("deny "+op, regex, logTag))
+			} else {
+				builder.addRule(
+					fmt.Sprintf("(deny %s", op),
+					fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
+					fmt.Sprintf("  (with message %q))", logTag),
+				)
+			}
 		}
 	}
 
@@ -296,11 +303,7 @@ func generateWriteRules(allowPaths, denyPaths []string, allowGitConfig bool, wor
 
 		if ContainsGlobChars(normalized) {
 			regex := GlobToRegex(normalized)
-			builder.addRule(
-				"(allow file-write*",
-				fmt.Sprintf("  (regex %s)", escapePath(regex)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
+			builder.addRule(buildFileSystemRegexRule("allow file-write*", regex, logTag))
 		} else {
 			builder.addRule(
 				"(allow file-write*",
@@ -322,11 +325,7 @@ func generateWriteRules(allowPaths, denyPaths []string, allowGitConfig bool, wor
 
 		if ContainsGlobChars(normalized) {
 			regex := GlobToRegex(normalized)
-			builder.addRule(
-				"(deny file-write*",
-				fmt.Sprintf("  (regex %s)", escapePath(regex)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
+			builder.addRule(buildFileSystemRegexRule("deny file-write*", regex, logTag))
 		} else {
 			builder.addRule(
 				"(deny file-write*",
@@ -349,11 +348,7 @@ func generateMoveBlockingRules(builder *seatbeltRuleBuilder, pathPatterns []stri
 
 		if ContainsGlobChars(normalized) {
 			regex := GlobToRegex(normalized)
-			builder.addRule(
-				"(deny file-write-unlink",
-				fmt.Sprintf("  (regex %s)", escapePath(regex)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
+			builder.addRule(buildFileSystemRegexRule("deny file-write-unlink", regex, logTag))
 
 			// For globs, extract static prefix and block ancestor moves
 			staticPrefix := strings.Split(normalized, "*")[0]

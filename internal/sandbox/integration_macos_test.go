@@ -131,6 +131,41 @@ func TestMacOS_SeatbeltAllowsReadSystemFiles(t *testing.T) {
 	}
 }
 
+// TestMacOS_SeatbeltBlocksDenyReadUnderDefaultDenyRead verifies that in defaultDenyRead mode,
+// paths matched by denyRead (like **/.env) are blocked even if they are inside a readable
+// workspace (like "."). This verifies the precedence issue remains fixed in actual sandboxing.
+func TestMacOS_SeatbeltBlocksDenyReadUnderDefaultDenyRead(t *testing.T) {
+	skipIfAlreadySandboxed(t)
+
+	workspace := createTempWorkspace(t)
+
+	// Create allowed.json which should be readable
+	createTestFile(t, workspace, "allowed.json", `{"key": "value"}`)
+
+	// Create .env which should be blocked from reading
+	createTestFile(t, workspace, ".env", `SECRET_KEY=supersecret`)
+
+	cfg := testConfigWithWorkspace(workspace)
+	cfg.Filesystem.DefaultDenyRead = true
+	cfg.Filesystem.AllowRead = []string{workspace}
+	cfg.Filesystem.DenyRead = []string{"**/.env"}
+
+	// 1. Reading allowed.json should succeed
+	resultAllowed := runUnderSandbox(t, cfg, "cat "+filepath.Join(workspace, "allowed.json"), workspace)
+	assertAllowed(t, resultAllowed)
+	if !strings.Contains(resultAllowed.Stdout, "value") {
+		t.Errorf("expected to read allowed.json content, got: %q", resultAllowed.Stdout)
+	}
+
+	// 2. Reading .env should be blocked
+	resultDenied := runUnderSandbox(t, cfg, "cat "+filepath.Join(workspace, ".env"), workspace)
+	// We expect the command to fail/be blocked
+	assertBlocked(t, resultDenied)
+	if strings.Contains(resultDenied.Stdout, "supersecret") {
+		t.Errorf("expected .env reading to be blocked, but secret content was read: %q", resultDenied.Stdout)
+	}
+}
+
 // TestMacOS_SeatbeltBlocksWriteSystemFiles verifies system files cannot be written.
 func TestMacOS_SeatbeltBlocksWriteSystemFiles(t *testing.T) {
 	skipIfAlreadySandboxed(t)
