@@ -90,36 +90,59 @@ func getAncestorDirectories(pathStr string) []string {
 	return ancestors
 }
 
-// expandMacOSTmpPaths mirrors /tmp paths to /private/tmp equivalents and vice versa.
-// On macOS, /tmp is a symlink to /private/tmp, and symlink resolution can fail if paths
-// don't exist yet. Adding both variants ensures sandbox rules match kernel-resolved paths.
-func expandMacOSTmpPaths(paths []string) []string {
-	seen := make(map[string]bool)
+// macOS root-path aliases: the sealed system volume exposes these top-level
+// entries as symlinks to /private/*. Seatbelt matches kernel-resolved paths,
+// so path rules must be emitted for both spellings; NormalizePath only
+// resolves them for non-glob paths that already exist.
+var macOSPathAliases = []struct{ root, mirror string }{
+	{"/tmp", "/private/tmp"},
+	{"/var", "/private/var"},
+	{"/etc", "/private/etc"},
+}
+
+// expandMacOSPathAliases mirrors each path to its /private/* equivalent (and
+// vice versa). Symlink resolution can fail when paths don't exist yet, and
+// globs are never resolved, so adding both variants ensures sandbox rules
+// match kernel-resolved paths.
+func expandMacOSPathAliases(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
 	for _, p := range paths {
 		seen[p] = true
 	}
 
 	var additions []string
 	for _, p := range paths {
-		var mirror string
-		switch {
-		case p == "/tmp":
-			mirror = "/private/tmp"
-		case p == "/private/tmp":
-			mirror = "/tmp"
-		case strings.HasPrefix(p, "/tmp/"):
-			mirror = "/private" + p
-		case strings.HasPrefix(p, "/private/tmp/"):
-			mirror = strings.TrimPrefix(p, "/private")
-		}
-
-		if mirror != "" && !seen[mirror] {
-			seen[mirror] = true
-			additions = append(additions, mirror)
+		for _, a := range macOSPathAliases {
+			var mirror string
+			switch {
+			case p == a.root:
+				mirror = a.mirror
+			case p == a.mirror:
+				mirror = a.root
+			case strings.HasPrefix(p, a.root+"/"):
+				mirror = a.mirror + p[len(a.root):]
+			case strings.HasPrefix(p, a.mirror+"/"):
+				mirror = a.root + p[len(a.mirror):]
+			}
+			if mirror != "" && !seen[mirror] {
+				seen[mirror] = true
+				additions = append(additions, mirror)
+			}
 		}
 	}
 
 	return append(paths, additions...)
+}
+
+// seatbeltPathSpellings returns the macOS spellings a path pattern may take at
+// runtime. On macOS /tmp is a symlink to /private/tmp and seatbelt rules match
+// the kernel-resolved path, so a rule emitted for only one spelling silently
+// misses the other (a deny doesn't deny, an allow doesn't allow). NormalizePath
+// only resolves symlinks for non-glob paths that already exist, so globs (and
+// not-yet-existing literals) keep the user's spelling — mirror them via
+// expandMacOSPathAliases, which is pure string-prefix logic and works for globs.
+func seatbeltPathSpellings(pathPattern string) []string {
+	return expandMacOSPathAliases([]string{NormalizePath(pathPattern)})
 }
 
 // seatbeltRuleBuilder preserves first-seen rule order while skipping duplicates.
@@ -233,16 +256,18 @@ func generateReadRules(defaultDenyRead, strictDenyRead bool, allowPaths, denyPat
 
 		// Allow reading data from user-specified paths
 		for _, pathPattern := range allowPaths {
-			normalized := NormalizePath(pathPattern)
-
-			if ContainsGlobChars(normalized) {
-				regex := GlobToRegex(normalized)
-				builder.addRule(buildFileSystemRegexRule("allow file-read-data", regex, ""))
-			} else {
-				builder.addRule(
-					"(allow file-read-data",
-					fmt.Sprintf("  (subpath %s))", escapePath(normalized)),
-				)
+			// Emit both /tmp and /private/tmp spellings so the allow matches the
+			// kernel-resolved path (see seatbeltPathSpellings).
+			for _, normalized := range seatbeltPathSpellings(pathPattern) {
+				if ContainsGlobChars(normalized) {
+					regex := GlobToRegex(normalized)
+					builder.addRule(buildFileSystemRegexRule("allow file-read-data", regex, ""))
+				} else {
+					builder.addRule(
+						"(allow file-read-data",
+						fmt.Sprintf("  (subpath %s))", escapePath(normalized)),
+					)
+				}
 			}
 		}
 	} else {
@@ -255,24 +280,62 @@ func generateReadRules(defaultDenyRead, strictDenyRead bool, allowPaths, denyPat
 	// is NOT overridden by a wildcard deny (like file-read*). We must explicitly
 	// deny the same specific operations that were allowed.
 	for _, pathPattern := range denyPaths {
-		normalized := NormalizePath(pathPattern)
-
 		ops := []string{"file-read*"}
 		if defaultDenyRead {
 			// In defaultDenyRead mode, we explicitly allowed these two classes.
 			ops = append(ops, "file-read-data", "file-read-metadata")
 		}
 
-		for _, op := range ops {
-			if ContainsGlobChars(normalized) {
-				regex := GlobToRegex(normalized)
-				builder.addRule(buildFileSystemRegexRule("deny "+op, regex, logTag))
-			} else {
-				builder.addRule(
-					fmt.Sprintf("(deny %s", op),
-					fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
-					fmt.Sprintf("  (with message %q))", logTag),
-				)
+		// Emit both /tmp and /private/tmp spellings: a deny emitted for only the
+		// /tmp spelling never fires against the kernel-resolved /private/tmp
+		// path, silently allowing reads the user denied.
+		for _, normalized := range seatbeltPathSpellings(pathPattern) {
+			for _, op := range ops {
+				if ContainsGlobChars(normalized) {
+					regex := GlobToRegex(normalized)
+					builder.addRule(buildFileSystemRegexRule("deny "+op, regex, logTag))
+				} else {
+					builder.addRule(
+						fmt.Sprintf("(deny %s", op),
+						fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
+						fmt.Sprintf("  (with message %q))", logTag),
+					)
+				}
+			}
+		}
+	}
+
+	// Permissive mode: re-allow the specific paths the user listed in allowRead,
+	// even when a template denyRead covers them (e.g. re-allowing
+	// ~/.gnupg/pubring.kbx under the code template's ~/.gnupg/** deny for gpg
+	// signing). Emitted AFTER the denies: per the note above, a specific
+	// operation allow (file-read-data/metadata) is not overridden by a wildcard
+	// deny (file-read*), so the explicit user grant wins. Both ops are needed —
+	// `deny file-read*` covers data AND metadata. Skipped when there are no
+	// denies: the blanket (allow file-read*) already permits everything, so the
+	// rules would be pure noise (deny-free profiles stay byte-identical).
+	if !defaultDenyRead && len(denyPaths) > 0 {
+		for _, pathPattern := range allowPaths {
+			// Emit both /tmp,/var,/etc and /private/* spellings so the re-allow
+			// matches the kernel-resolved path (see seatbeltPathSpellings). The
+			// deny loop already emits both; without this, an allowRead override
+			// under /var or /etc (glob or not-yet-existing literal) silently
+			// misses and the deny wins.
+			for _, normalized := range seatbeltPathSpellings(pathPattern) {
+				regex := ""
+				if ContainsGlobChars(normalized) {
+					regex = GlobToRegex(normalized)
+				}
+				for _, op := range []string{"file-read-data", "file-read-metadata"} {
+					if regex != "" {
+						builder.addRule(buildFileSystemRegexRule("allow "+op, regex, ""))
+					} else {
+						builder.addRule(
+							"(allow "+op,
+							fmt.Sprintf("  (subpath %s))", escapePath(normalized)),
+						)
+					}
+				}
 			}
 		}
 	}
@@ -299,17 +362,19 @@ func generateWriteRules(allowPaths, denyPaths []string, allowGitConfig bool, wor
 
 	// Generate allow rules
 	for _, pathPattern := range allowPaths {
-		normalized := NormalizePath(pathPattern)
-
-		if ContainsGlobChars(normalized) {
-			regex := GlobToRegex(normalized)
-			builder.addRule(buildFileSystemRegexRule("allow file-write*", regex, logTag))
-		} else {
-			builder.addRule(
-				"(allow file-write*",
-				fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
+		// Emit both /tmp and /private/tmp spellings so the allow matches the
+		// kernel-resolved path (see seatbeltPathSpellings).
+		for _, normalized := range seatbeltPathSpellings(pathPattern) {
+			if ContainsGlobChars(normalized) {
+				regex := GlobToRegex(normalized)
+				builder.addRule(buildFileSystemRegexRule("allow file-write*", regex, logTag))
+			} else {
+				builder.addRule(
+					"(allow file-write*",
+					fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
+					fmt.Sprintf("  (with message %q))", logTag),
+				)
+			}
 		}
 	}
 
@@ -321,17 +386,19 @@ func generateWriteRules(allowPaths, denyPaths []string, allowGitConfig bool, wor
 	allDenyPaths = append(allDenyPaths, mandatoryDeny...)
 
 	for _, pathPattern := range allDenyPaths {
-		normalized := NormalizePath(pathPattern)
-
-		if ContainsGlobChars(normalized) {
-			regex := GlobToRegex(normalized)
-			builder.addRule(buildFileSystemRegexRule("deny file-write*", regex, logTag))
-		} else {
-			builder.addRule(
-				"(deny file-write*",
-				fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
+		// Emit both /tmp and /private/tmp spellings so the deny matches the
+		// kernel-resolved path (see seatbeltPathSpellings).
+		for _, normalized := range seatbeltPathSpellings(pathPattern) {
+			if ContainsGlobChars(normalized) {
+				regex := GlobToRegex(normalized)
+				builder.addRule(buildFileSystemRegexRule("deny file-write*", regex, logTag))
+			} else {
+				builder.addRule(
+					"(deny file-write*",
+					fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
+					fmt.Sprintf("  (with message %q))", logTag),
+				)
+			}
 		}
 	}
 
@@ -344,49 +411,51 @@ func generateWriteRules(allowPaths, denyPaths []string, allowGitConfig bool, wor
 // generateMoveBlockingRules generates rules to prevent file movement bypasses.
 func generateMoveBlockingRules(builder *seatbeltRuleBuilder, pathPatterns []string, logTag string) {
 	for _, pathPattern := range pathPatterns {
-		normalized := NormalizePath(pathPattern)
+		// Emit both /tmp and /private/tmp spellings so unlink/move blocks match
+		// the kernel-resolved path (see seatbeltPathSpellings).
+		for _, normalized := range seatbeltPathSpellings(pathPattern) {
+			if ContainsGlobChars(normalized) {
+				regex := GlobToRegex(normalized)
+				builder.addRule(buildFileSystemRegexRule("deny file-write-unlink", regex, logTag))
 
-		if ContainsGlobChars(normalized) {
-			regex := GlobToRegex(normalized)
-			builder.addRule(buildFileSystemRegexRule("deny file-write-unlink", regex, logTag))
+				// For globs, extract static prefix and block ancestor moves
+				staticPrefix := strings.Split(normalized, "*")[0]
+				if staticPrefix != "" && staticPrefix != "/" {
+					baseDir := staticPrefix
+					if strings.HasSuffix(baseDir, "/") {
+						baseDir = baseDir[:len(baseDir)-1]
+					} else {
+						baseDir = filepath.Dir(staticPrefix)
+					}
 
-			// For globs, extract static prefix and block ancestor moves
-			staticPrefix := strings.Split(normalized, "*")[0]
-			if staticPrefix != "" && staticPrefix != "/" {
-				baseDir := staticPrefix
-				if strings.HasSuffix(baseDir, "/") {
-					baseDir = baseDir[:len(baseDir)-1]
-				} else {
-					baseDir = filepath.Dir(staticPrefix)
+					builder.addRule(
+						"(deny file-write-unlink",
+						fmt.Sprintf("  (literal %s)", escapePath(baseDir)),
+						fmt.Sprintf("  (with message %q))", logTag),
+					)
+
+					for _, ancestor := range getAncestorDirectories(baseDir) {
+						builder.addRule(
+							"(deny file-write-unlink",
+							fmt.Sprintf("  (literal %s)", escapePath(ancestor)),
+							fmt.Sprintf("  (with message %q))", logTag),
+						)
+					}
 				}
-
+			} else {
 				builder.addRule(
 					"(deny file-write-unlink",
-					fmt.Sprintf("  (literal %s)", escapePath(baseDir)),
+					fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
 					fmt.Sprintf("  (with message %q))", logTag),
 				)
 
-				for _, ancestor := range getAncestorDirectories(baseDir) {
+				for _, ancestor := range getAncestorDirectories(normalized) {
 					builder.addRule(
 						"(deny file-write-unlink",
 						fmt.Sprintf("  (literal %s)", escapePath(ancestor)),
 						fmt.Sprintf("  (with message %q))", logTag),
 					)
 				}
-			}
-		} else {
-			builder.addRule(
-				"(deny file-write-unlink",
-				fmt.Sprintf("  (subpath %s)", escapePath(normalized)),
-				fmt.Sprintf("  (with message %q))", logTag),
-			)
-
-			for _, ancestor := range getAncestorDirectories(normalized) {
-				builder.addRule(
-					"(deny file-write-unlink",
-					fmt.Sprintf("  (literal %s)", escapePath(ancestor)),
-					fmt.Sprintf("  (with message %q))", logTag),
-				)
 			}
 		}
 	}
@@ -683,7 +752,7 @@ func WrapCommandMacOS(cfg *config.Config, command string, workingDir string, htt
 	}
 
 	// Expand /tmp <-> /private/tmp for macOS symlink compatibility
-	allowPaths = expandMacOSTmpPaths(allowPaths)
+	allowPaths = expandMacOSPathAliases(allowPaths)
 
 	// Enable local binding if ports are exposed or if explicitly configured
 	allowLocalBinding := cfg.Network.AllowLocalBinding || len(exposedPorts) > 0

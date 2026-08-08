@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -423,6 +424,166 @@ func TestMacOS_ProfileNetworkSection(t *testing.T) {
 }
 
 // TestMacOS_DefaultDenyRead verifies that the defaultDenyRead option properly restricts filesystem reads.
+
+// TestMacOS_TMPCanonicalizationInPathRules verifies that /tmp-prefixed read and
+// write path rules are emitted in BOTH the /tmp and /private/tmp spellings.
+// On macOS /tmp is a symlink to /private/tmp and seatbelt matches the
+// kernel-resolved path, so a rule with only the /tmp spelling is a silent no-op:
+// a denyRead glob under /tmp never denies, an allowWrite glob never allows.
+// NormalizePath skips EvalSymlinks for globs (and missing literals), so the
+// mirror must be added by string logic — exactly what expandMacOSPathAliases does.
+func TestMacOS_TMPCanonicalizationInPathRules(t *testing.T) {
+	profile := func(mut func(p *MacOSSandboxParams)) string {
+		p := MacOSSandboxParams{
+			Command:                 "echo test",
+			NeedsNetworkRestriction: true,
+			HTTPProxyPort:           8080,
+			SOCKSProxyPort:          1080,
+		}
+		mut(&p)
+		return GenerateSandboxProfile(p)
+	}
+
+	assertRegexRule := func(t *testing.T, prof, op, pattern string) {
+		t.Helper()
+		// Mirror buildFileSystemRegexRule exactly: it renders `(op\n  (regex
+		// #"..."))` escaping only double quotes — NOT backslashes. %q would
+		// double-escape regex metachars like `\.` and never match.
+		regex := GlobToRegex(pattern)
+		want := fmt.Sprintf("(%s\n  (regex #\"%s\")", op, strings.ReplaceAll(regex, `"`, `\"`))
+		if strings.Count(prof, want) != 1 {
+			t.Errorf("expected %q exactly once in profile:\n%s", want, prof)
+		}
+	}
+
+	t.Run("denyRead glob under /tmp emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/tmp/fence-df/**"} })
+		assertRegexRule(t, prof, "deny file-read*", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/tmp/fence-df/**")
+	})
+
+	t.Run("denyRead glob under /tmp in defaultDenyRead mode", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) {
+			p.DefaultDenyRead = true
+			p.ReadDenyPaths = []string{"/tmp/fence-df/**"}
+		})
+		// defaultDenyRead additionally denies file-read-data and file-read-metadata.
+		assertRegexRule(t, prof, "deny file-read-data", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "deny file-read-data", "/private/tmp/fence-df/**")
+	})
+
+	t.Run("allowRead glob under /tmp emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) {
+			p.DefaultDenyRead = true
+			p.ReadAllowPaths = []string{"/tmp/fence-df/**"}
+		})
+		assertRegexRule(t, prof, "allow file-read-data", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "allow file-read-data", "/private/tmp/fence-df/**")
+	})
+
+	t.Run("denyWrite glob under /tmp emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.WriteDenyPaths = []string{"/tmp/fence-df/**"} })
+		assertRegexRule(t, prof, "deny file-write*", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "deny file-write*", "/private/tmp/fence-df/**")
+	})
+
+	t.Run("allowWrite glob under /tmp emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.WriteAllowPaths = []string{"/tmp/fence-df/**"} })
+		assertRegexRule(t, prof, "allow file-write*", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "allow file-write*", "/private/tmp/fence-df/**")
+	})
+
+	t.Run("literal deny under /tmp emits both subpath spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/tmp/fence-df"} })
+		for _, want := range []string{
+			`(deny file-read*`,
+			`  (subpath "/tmp/fence-df")`,
+			`  (subpath "/private/tmp/fence-df")`,
+		} {
+			if !strings.Contains(prof, want) {
+				t.Errorf("expected %q in profile:\n%s", want, prof)
+			}
+		}
+	})
+
+	t.Run("move-blocking unlink rules cover both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.WriteDenyPaths = []string{"/tmp/fence-df/**"} })
+		assertRegexRule(t, prof, "deny file-write-unlink", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "deny file-write-unlink", "/private/tmp/fence-df/**")
+		for _, want := range []string{
+			`(literal "/tmp/fence-df")`,
+			`(literal "/private/tmp/fence-df")`,
+		} {
+			if !strings.Contains(prof, want) {
+				t.Errorf("expected %q in profile (move-block base dir):\n%s", want, prof)
+			}
+		}
+	})
+
+	t.Run("non-tmp paths stay single-spelling", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/home/user/secret/**"} })
+		assertRegexRule(t, prof, "deny file-read*", "/home/user/secret/**")
+		if strings.Contains(prof, "private/tmp") {
+			t.Errorf("non-tmp deny leaked a /private/tmp variant:\n%s", prof)
+		}
+	})
+
+	t.Run("denyRead glob under /var emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/var/folders/fence/**"} })
+		assertRegexRule(t, prof, "deny file-read*", "/var/folders/fence/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/var/folders/fence/**")
+	})
+
+	t.Run("denyRead glob under /etc emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/etc/fence/**"} })
+		assertRegexRule(t, prof, "deny file-read*", "/etc/fence/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/etc/fence/**")
+	})
+
+	t.Run("permissive allowRead literal re-allow under /tmp covers both spellings", func(t *testing.T) {
+		// PR #218 re-allow: allowRead must beat a denyRead glob. The re-allow
+		// must carry both /tmp spellings or the override silently misses the
+		// kernel-resolved /private/tmp path.
+		prof := profile(func(p *MacOSSandboxParams) {
+			p.ReadAllowPaths = []string{"/tmp/fence-df/secret.txt"}
+			p.ReadDenyPaths = []string{"/tmp/fence-df/**"}
+		})
+		// Literal re-allow rules render multi-line: (allow file-read-data\n  (subpath "…")).
+		for _, spelling := range []string{"/tmp/fence-df/secret.txt", "/private/tmp/fence-df/secret.txt"} {
+			want := fmt.Sprintf("(allow file-read-data\n  (subpath %q))", spelling)
+			if strings.Count(prof, want) != 1 {
+				t.Errorf("expected %q exactly once in profile (re-allow override):\n%s", want, prof)
+			}
+		}
+		assertRegexRule(t, prof, "deny file-read*", "/tmp/fence-df/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/tmp/fence-df/**")
+	})
+
+	t.Run("permissive allowRead glob re-allow under /var covers both spellings", func(t *testing.T) {
+		// Bot P1 (cubic, confidence 9): glob override under /var failed after
+		// kernel resolution — deny had /private/var, re-allow only /var.
+		prof := profile(func(p *MacOSSandboxParams) {
+			p.ReadAllowPaths = []string{"/var/folders/fence/secret/*.txt"}
+			p.ReadDenyPaths = []string{"/var/folders/fence/**"}
+		})
+		assertRegexRule(t, prof, "allow file-read-data", "/var/folders/fence/secret/*.txt")
+		assertRegexRule(t, prof, "allow file-read-data", "/private/var/folders/fence/secret/*.txt")
+		assertRegexRule(t, prof, "allow file-read-metadata", "/private/var/folders/fence/secret/*.txt")
+		assertRegexRule(t, prof, "deny file-read*", "/var/folders/fence/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/var/folders/fence/**")
+	})
+
+	t.Run("permissive allowRead glob re-allow under /etc covers both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) {
+			p.ReadAllowPaths = []string{"/etc/fence/*.conf"}
+			p.ReadDenyPaths = []string{"/etc/fence/**"}
+		})
+		assertRegexRule(t, prof, "allow file-read-data", "/etc/fence/*.conf")
+		assertRegexRule(t, prof, "allow file-read-data", "/private/etc/fence/*.conf")
+		assertRegexRule(t, prof, "deny file-read*", "/private/etc/fence/**")
+	})
+}
+
 func TestMacOS_DefaultDenyRead(t *testing.T) {
 	tests := []struct {
 		name                      string
@@ -505,6 +666,77 @@ func TestMacOS_DefaultDenyRead(t *testing.T) {
 	}
 }
 
+// TestGenerateReadRules_PermissiveAllowReadOverridesWildcardDeny verifies that
+// in permissive mode (defaultDenyRead=false) a user allowRead path is re-allowed
+// even under a denyRead subtree: the specific file-read-data/file-read-metadata
+// allows are emitted AFTER the wildcard deny, so the explicit grant wins.
+func TestGenerateReadRules_PermissiveAllowReadOverridesWildcardDeny(t *testing.T) {
+	rules := generateReadRules(
+		false, false,
+		[]string{"~/.gnupg/pubring.kbx"},
+		[]string{"~/.gnupg/**"},
+		"test-log",
+	)
+	profile := strings.Join(rules, "\n")
+
+	pub := escapePath(NormalizePath("~/.gnupg/pubring.kbx"))
+
+	for _, want := range []string{
+		"(allow file-read*)",                           // blanket
+		"(deny file-read*",                             // template deny (glob -> regex)
+		"(allow file-read-data\n  (subpath " + pub,     // override: data
+		"(allow file-read-metadata\n  (subpath " + pub, // override: metadata
+	} {
+		if !strings.Contains(profile, want) {
+			t.Errorf("expected %q in rules:\n%s", want, profile)
+		}
+	}
+
+	// Ordering: the specific allows must come AFTER the deny.
+	denyIdx := strings.Index(profile, "(deny file-read*")
+	allowDataIdx := strings.Index(profile, "(allow file-read-data\n  (subpath "+pub)
+	if denyIdx < 0 || allowDataIdx < 0 || allowDataIdx < denyIdx {
+		t.Errorf("allow file-read-data for %s must be emitted after the deny (deny@%d allow@%d):\n%s",
+			pub, denyIdx, allowDataIdx, profile)
+	}
+}
+
+// TestGenerateReadRules_PermissiveNoDenyKeepsProfileUnchanged verifies the
+// override is only emitted when a deny actually exists: with no denyRead, the
+// blanket allow already permits everything, so allowRead must not change the
+// profile (deny-free configs stay byte-identical to pre-fix output).
+func TestGenerateReadRules_PermissiveNoDenyKeepsProfileUnchanged(t *testing.T) {
+	withAllow := generateReadRules(false, false, []string{"~/.gnupg/pubring.kbx"}, nil, "log")
+	withoutAllow := generateReadRules(false, false, nil, nil, "log")
+
+	if strings.Join(withAllow, "\n") != strings.Join(withoutAllow, "\n") {
+		t.Errorf("allowRead must be a no-op when there is no denyRead:\nwith:    %v\nwithout: %v", withAllow, withoutAllow)
+	}
+}
+
+// TestGenerateReadRules_PermissiveAllowReadGlob verifies glob allowRead paths
+// produce regex allows (same op pair), matching the deny regex style.
+func TestGenerateReadRules_PermissiveAllowReadGlob(t *testing.T) {
+	rules := generateReadRules(false, false, []string{"/tmp/pub/*.kbx"}, []string{"/tmp/pub/**"}, "log")
+	profile := strings.Join(rules, "\n")
+
+	for _, op := range []string{"file-read-data", "file-read-metadata"} {
+		if !strings.Contains(profile, "(allow "+op+"\n  (regex #\"^/tmp/pub/[^/]*\\.kbx$\")") {
+			t.Errorf("expected regex allow for %s:\n%s", op, profile)
+		}
+	}
+}
+
+// TestGenerateReadRules_PermissiveAllowReadDeduplicates verifies repeated
+// allowRead entries emit a single rule set (seatbeltRuleBuilder dedupes).
+func TestGenerateReadRules_PermissiveAllowReadDeduplicates(t *testing.T) {
+	rules := generateReadRules(false, false, []string{"/x/a", "/x/a"}, []string{"/x/**"}, "log")
+	profile := strings.Join(rules, "\n")
+	if got := strings.Count(profile, "(allow file-read-data\n  (subpath \"/x/a\")"); got != 1 {
+		t.Errorf("expected exactly 1 file-read-data allow for /x/a, got %d:\n%s", got, profile)
+	}
+}
+
 func TestGlobToRegex_DoubleStarMatchesCurrentDirectory(t *testing.T) {
 	tests := []struct {
 		pattern string
@@ -546,7 +778,7 @@ func TestGlobToRegex_DoubleStarMatchesCurrentDirectory(t *testing.T) {
 }
 
 // TestExpandMacOSTmpPaths verifies that /tmp and /private/tmp paths are properly mirrored.
-func TestExpandMacOSTmpPaths(t *testing.T) {
+func TestExpandMacOSPathAliases(t *testing.T) {
 	tests := []struct {
 		name  string
 		input []string
@@ -592,20 +824,45 @@ func TestExpandMacOSTmpPaths(t *testing.T) {
 			input: []string{".", "/tmp/fence", "/private/tmp/fence"},
 			want:  []string{".", "/tmp/fence", "/private/tmp/fence"},
 		},
+		{
+			name:  "mirrors /var/folders to /private/var/folders",
+			input: []string{".", "/var/folders"},
+			want:  []string{".", "/var/folders", "/private/var/folders"},
+		},
+		{
+			name:  "mirrors /private/var to /var",
+			input: []string{".", "/private/var"},
+			want:  []string{".", "/private/var", "/var"},
+		},
+		{
+			name:  "mirrors /var/tmp/foo to /private/var/tmp/foo",
+			input: []string{".", "/var/tmp/foo"},
+			want:  []string{".", "/var/tmp/foo", "/private/var/tmp/foo"},
+		},
+		{
+			name:  "mirrors /etc/hosts to /private/etc/hosts",
+			input: []string{".", "/etc/hosts"},
+			want:  []string{".", "/etc/hosts", "/private/etc/hosts"},
+		},
+		{
+			name:  "no cross-alias confusion between /tmp and /var",
+			input: []string{".", "/tmp/var"},
+			want:  []string{".", "/tmp/var", "/private/tmp/var"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := expandMacOSTmpPaths(tt.input)
+			got := expandMacOSPathAliases(tt.input)
 
 			if len(got) != len(tt.want) {
-				t.Errorf("expandMacOSTmpPaths() = %v, want %v", got, tt.want)
+				t.Errorf("expandMacOSPathAliases() = %v, want %v", got, tt.want)
 				return
 			}
 
 			for i, v := range got {
 				if v != tt.want[i] {
-					t.Errorf("expandMacOSTmpPaths()[%d] = %v, want %v", i, v, tt.want[i])
+					t.Errorf("expandMacOSPathAliases()[%d] = %v, want %v", i, v, tt.want[i])
 				}
 			}
 		})
