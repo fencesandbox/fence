@@ -90,32 +90,44 @@ func getAncestorDirectories(pathStr string) []string {
 	return ancestors
 }
 
-// expandMacOSTmpPaths mirrors /tmp paths to /private/tmp equivalents and vice versa.
-// On macOS, /tmp is a symlink to /private/tmp, and symlink resolution can fail if paths
-// don't exist yet. Adding both variants ensures sandbox rules match kernel-resolved paths.
-func expandMacOSTmpPaths(paths []string) []string {
-	seen := make(map[string]bool)
+// macOS root-path aliases: the sealed system volume exposes these top-level
+// entries as symlinks to /private/*. Seatbelt matches kernel-resolved paths,
+// so path rules must be emitted for both spellings; NormalizePath only
+// resolves them for non-glob paths that already exist.
+var macOSPathAliases = []struct{ root, mirror string }{
+	{"/tmp", "/private/tmp"},
+	{"/var", "/private/var"},
+	{"/etc", "/private/etc"},
+}
+
+// expandMacOSPathAliases mirrors each path to its /private/* equivalent (and
+// vice versa). Symlink resolution can fail when paths don't exist yet, and
+// globs are never resolved, so adding both variants ensures sandbox rules
+// match kernel-resolved paths.
+func expandMacOSPathAliases(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
 	for _, p := range paths {
 		seen[p] = true
 	}
 
 	var additions []string
 	for _, p := range paths {
-		var mirror string
-		switch {
-		case p == "/tmp":
-			mirror = "/private/tmp"
-		case p == "/private/tmp":
-			mirror = "/tmp"
-		case strings.HasPrefix(p, "/tmp/"):
-			mirror = "/private" + p
-		case strings.HasPrefix(p, "/private/tmp/"):
-			mirror = strings.TrimPrefix(p, "/private")
-		}
-
-		if mirror != "" && !seen[mirror] {
-			seen[mirror] = true
-			additions = append(additions, mirror)
+		for _, a := range macOSPathAliases {
+			var mirror string
+			switch {
+			case p == a.root:
+				mirror = a.mirror
+			case p == a.mirror:
+				mirror = a.root
+			case strings.HasPrefix(p, a.root+"/"):
+				mirror = a.mirror + p[len(a.root):]
+			case strings.HasPrefix(p, a.mirror+"/"):
+				mirror = a.root + p[len(a.mirror):]
+			}
+			if mirror != "" && !seen[mirror] {
+				seen[mirror] = true
+				additions = append(additions, mirror)
+			}
 		}
 	}
 
@@ -127,10 +139,10 @@ func expandMacOSTmpPaths(paths []string) []string {
 // the kernel-resolved path, so a rule emitted for only one spelling silently
 // misses the other (a deny doesn't deny, an allow doesn't allow). NormalizePath
 // only resolves symlinks for non-glob paths that already exist, so globs (and
-// not-yet-existing literals) keep the user's /tmp spelling — mirror it via
-// expandMacOSTmpPaths, which is pure string-prefix logic and works for globs.
+// not-yet-existing literals) keep the user's spelling — mirror them via
+// expandMacOSPathAliases, which is pure string-prefix logic and works for globs.
 func seatbeltPathSpellings(pathPattern string) []string {
-	return expandMacOSTmpPaths([]string{NormalizePath(pathPattern)})
+	return expandMacOSPathAliases([]string{NormalizePath(pathPattern)})
 }
 
 // seatbeltRuleBuilder preserves first-seen rule order while skipping duplicates.
@@ -734,7 +746,7 @@ func WrapCommandMacOS(cfg *config.Config, command string, workingDir string, htt
 	}
 
 	// Expand /tmp <-> /private/tmp for macOS symlink compatibility
-	allowPaths = expandMacOSTmpPaths(allowPaths)
+	allowPaths = expandMacOSPathAliases(allowPaths)
 
 	// Enable local binding if ports are exposed or if explicitly configured
 	allowLocalBinding := cfg.Network.AllowLocalBinding || len(exposedPorts) > 0

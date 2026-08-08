@@ -431,7 +431,7 @@ func TestMacOS_ProfileNetworkSection(t *testing.T) {
 // kernel-resolved path, so a rule with only the /tmp spelling is a silent no-op:
 // a denyRead glob under /tmp never denies, an allowWrite glob never allows.
 // NormalizePath skips EvalSymlinks for globs (and missing literals), so the
-// mirror must be added by string logic — exactly what expandMacOSTmpPaths does.
+// mirror must be added by string logic — exactly what expandMacOSPathAliases does.
 func TestMacOS_TMPCanonicalizationInPathRules(t *testing.T) {
 	profile := func(mut func(p *MacOSSandboxParams)) string {
 		p := MacOSSandboxParams{
@@ -524,6 +524,18 @@ func TestMacOS_TMPCanonicalizationInPathRules(t *testing.T) {
 		if strings.Contains(prof, "private/tmp") {
 			t.Errorf("non-tmp deny leaked a /private/tmp variant:\n%s", prof)
 		}
+	})
+
+	t.Run("denyRead glob under /var emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/var/folders/fence/**"} })
+		assertRegexRule(t, prof, "deny file-read*", "/var/folders/fence/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/var/folders/fence/**")
+	})
+
+	t.Run("denyRead glob under /etc emits both spellings", func(t *testing.T) {
+		prof := profile(func(p *MacOSSandboxParams) { p.ReadDenyPaths = []string{"/etc/fence/**"} })
+		assertRegexRule(t, prof, "deny file-read*", "/etc/fence/**")
+		assertRegexRule(t, prof, "deny file-read*", "/private/etc/fence/**")
 	})
 }
 
@@ -721,7 +733,7 @@ func TestGlobToRegex_DoubleStarMatchesCurrentDirectory(t *testing.T) {
 }
 
 // TestExpandMacOSTmpPaths verifies that /tmp and /private/tmp paths are properly mirrored.
-func TestExpandMacOSTmpPaths(t *testing.T) {
+func TestExpandMacOSPathAliases(t *testing.T) {
 	tests := []struct {
 		name  string
 		input []string
@@ -767,20 +779,45 @@ func TestExpandMacOSTmpPaths(t *testing.T) {
 			input: []string{".", "/tmp/fence", "/private/tmp/fence"},
 			want:  []string{".", "/tmp/fence", "/private/tmp/fence"},
 		},
+		{
+			name:  "mirrors /var/folders to /private/var/folders",
+			input: []string{".", "/var/folders"},
+			want:  []string{".", "/var/folders", "/private/var/folders"},
+		},
+		{
+			name:  "mirrors /private/var to /var",
+			input: []string{".", "/private/var"},
+			want:  []string{".", "/private/var", "/var"},
+		},
+		{
+			name:  "mirrors /var/tmp/foo to /private/var/tmp/foo",
+			input: []string{".", "/var/tmp/foo"},
+			want:  []string{".", "/var/tmp/foo", "/private/var/tmp/foo"},
+		},
+		{
+			name:  "mirrors /etc/hosts to /private/etc/hosts",
+			input: []string{".", "/etc/hosts"},
+			want:  []string{".", "/etc/hosts", "/private/etc/hosts"},
+		},
+		{
+			name:  "no cross-alias confusion between /tmp and /var",
+			input: []string{".", "/tmp/var"},
+			want:  []string{".", "/tmp/var", "/private/tmp/var"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := expandMacOSTmpPaths(tt.input)
+			got := expandMacOSPathAliases(tt.input)
 
 			if len(got) != len(tt.want) {
-				t.Errorf("expandMacOSTmpPaths() = %v, want %v", got, tt.want)
+				t.Errorf("expandMacOSPathAliases() = %v, want %v", got, tt.want)
 				return
 			}
 
 			for i, v := range got {
 				if v != tt.want[i] {
-					t.Errorf("expandMacOSTmpPaths()[%d] = %v, want %v", i, v, tt.want[i])
+					t.Errorf("expandMacOSPathAliases()[%d] = %v, want %v", i, v, tt.want[i])
 				}
 			}
 		})
