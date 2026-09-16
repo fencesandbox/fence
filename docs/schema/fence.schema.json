@@ -150,6 +150,13 @@
       "additionalProperties": false,
       "description": "macOS-specific advanced sandbox controls. Ignored on non-macOS platforms.",
       "properties": {
+        "gpu": {
+          "description": "If true, allow Metal/GPU compute under the macOS sandbox by granting iokit-open on the Apple GPU accelerator user-client classes (AGX*/IOAccel*). Default: false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "mach": {
           "additionalProperties": false,
           "description": "Mach and XPC permissions for the macOS Seatbelt backend.",

@@ -88,6 +88,7 @@ type DevicesConfig struct {
 // MacOSConfig defines macOS-specific sandbox controls.
 type MacOSConfig struct {
 	Mach MachConfig `json:"mach,omitempty" description:"Mach and XPC permissions for the macOS Seatbelt backend."`
+	Gpu  *bool      `json:"gpu,omitempty" description:"If true, allow Metal/GPU compute under the macOS sandbox by granting iokit-open on the Apple GPU accelerator user-client classes (AGX*/IOAccel*). Default: false."`
 }
 
 // MachConfig defines additional Mach/XPC permissions for macOS sandboxes.
@@ -818,6 +819,9 @@ func Merge(base, override *Config) *Config {
 				Lookup:   mergeStrings(base.MacOS.Mach.Lookup, override.MacOS.Mach.Lookup),
 				Register: mergeStrings(base.MacOS.Mach.Register, override.MacOS.Mach.Register),
 			},
+
+			// Pointer field: override wins if set
+			Gpu: mergeOptionalBool(base.MacOS.Gpu, override.MacOS.Gpu),
 		},
 
 		Command: CommandConfig{

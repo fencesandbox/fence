@@ -229,12 +229,14 @@ other platforms.
 |-------|-------------|
 | `mach.lookup` | Additional Mach/XPC services to allow for `mach-lookup`. Supports exact service names, trailing-wildcard prefixes like `org.chromium.*`, and `*` to allow all lookups. |
 | `mach.register` | Additional Mach/XPC services to allow for `mach-register`. Supports exact service names, trailing-wildcard prefixes like `org.chromium.*`, and `*` to allow all registrations. |
+| `gpu` | If `true`, allow Metal/GPU compute inside the sandbox (e.g. MLX, llama.cpp, whisper.cpp). Grants `iokit-open` on the Apple GPU accelerator user-client classes (`AGX*`/`IOAccel*`). Default: `false`. |
 
 Example:
 
 ```json
 {
   "macos": {
+    "gpu": true,
     "mach": {
       "lookup": [
         "com.apple.CARenderServer",
@@ -255,6 +257,19 @@ a last resort when you intentionally want broad Mach access.
 
 If you're unsure which services a tool needs, run with `-m` to surface blocked
 `mach-lookup` / `mach-register` attempts.
+
+### GPU compute (Metal)
+
+The base profile only allows the clipboard/render IOKit user-client classes, so
+Metal workloads fail with errors like `[metal::load_device] No Metal device
+available` (MLX) or `ggml_metal_init: error: failed to create command queue`
+(llama.cpp). Setting `"macos": { "gpu": true }` grants `iokit-open` on the GPU
+accelerator user-client classes needed for Metal command queues.
+
+This is opt-in because GPU access is a real capability grant: any sandboxed
+process may submit compute to the Apple GPU. If a workload still fails, run
+with `-m` and check for denied `iokit-open` entries — the exact user-client
+class names vary across macOS versions and GPU generations.
 
 ## Filesystem Configuration
 

@@ -48,6 +48,9 @@ type MacOSSandboxParams struct {
 	DeniedExecPaths         []string
 	AllowPty                bool
 	AllowGitConfig          bool
+	// AllowGpu grants iokit-open on the Apple GPU accelerator user-client
+	// classes so Metal compute works inside the sandbox. Opt-in.
+	AllowGpu bool
 }
 
 // GlobToRegex converts a glob pattern to a regex for macOS sandbox profiles.
@@ -596,6 +599,28 @@ func GenerateSandboxProfile(params MacOSSandboxParams) string {
 		profile.WriteString("\n")
 	}
 
+	// GPU compute (Metal) — opt-in via macos.gpu. Creating a Metal device or
+	// command queue opens user clients on the AGXAccelerator service; the
+	// base profile only allows the clipboard/render classes, so GPU workloads
+	// fail at MTLDevice creation without these.
+	if params.AllowGpu {
+		profile.WriteString(`; GPU compute (Metal) - opt-in via macos.gpu
+; Class names vary by macOS version / GPU generation: pre-Ventura uses the
+; IOAccel*2 set (Chromium GPU-process profile), Apple Silicon on newer
+; macOS exposes AGXDeviceUserClient / AGXFamilyUserClient.
+(allow iokit-open
+  (iokit-user-client-class "AGXDeviceUserClient")
+  (iokit-user-client-class "AGXFamilyUserClient")
+  (iokit-user-client-class "AGXSharedUserClient")
+  (iokit-user-client-class "IOAccelDevice2")
+  (iokit-user-client-class "IOAccelSharedUserClient2")
+  (iokit-user-client-class "IOAccelContext2")
+  (iokit-user-client-class "IOAccelSubmitter2")
+  (iokit-user-client-class "IOAccelerationUserClient")
+)
+`)
+	}
+
 	if len(params.DeniedExecPaths) > 0 {
 		profile.WriteString("; Runtime executable deny (applies to child processes)\n")
 		for _, execPath := range params.DeniedExecPaths {
@@ -797,6 +822,7 @@ func WrapCommandMacOS(cfg *config.Config, command string, workingDir string, htt
 		DeniedExecPaths:         deniedExecPaths,
 		AllowPty:                cfg.AllowPty,
 		AllowGitConfig:          cfg.Filesystem.AllowGitConfig,
+		AllowGpu:                cfg.MacOS.Gpu != nil && *cfg.MacOS.Gpu,
 	}
 
 	if debug && len(exposedPorts) > 0 {

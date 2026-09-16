@@ -130,6 +130,7 @@ func buildMacOSParamsForTest(cfg *config.Config) MacOSSandboxParams {
 		WriteDenyPaths:          cfg.Filesystem.DenyWrite,
 		AllowPty:                cfg.AllowPty,
 		AllowGitConfig:          cfg.Filesystem.AllowGitConfig,
+		AllowGpu:                cfg.MacOS.Gpu != nil && *cfg.MacOS.Gpu,
 	}
 }
 
@@ -245,6 +246,70 @@ func TestMacOS_MachRegisterRules(t *testing.T) {
 				if !strings.Contains(profile, want) {
 					t.Fatalf("profile should contain %q, got:\n%s", want, profile)
 				}
+			}
+		})
+	}
+}
+
+func TestMacOS_GPUAllowRules(t *testing.T) {
+	tests := []struct {
+		name     string
+		allowGpu bool
+		wantGPU  bool
+	}{
+		{name: "gpu disabled by default", allowGpu: false, wantGPU: false},
+		{name: "gpu enabled", allowGpu: true, wantGPU: true},
+	}
+
+	wantClasses := []string{
+		`(iokit-user-client-class "AGXDeviceUserClient")`,
+		`(iokit-user-client-class "AGXFamilyUserClient")`,
+		`(iokit-user-client-class "AGXSharedUserClient")`,
+		`(iokit-user-client-class "IOAccelDevice2")`,
+		`(iokit-user-client-class "IOAccelSharedUserClient2")`,
+		`(iokit-user-client-class "IOAccelContext2")`,
+		`(iokit-user-client-class "IOAccelSubmitter2")`,
+		`(iokit-user-client-class "IOAccelerationUserClient")`,
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := GenerateSandboxProfile(MacOSSandboxParams{
+				Command:  "echo test",
+				AllowGpu: tt.allowGpu,
+			})
+
+			for _, want := range wantClasses {
+				if got := strings.Contains(profile, want); got != tt.wantGPU {
+					t.Fatalf("profile GPU class %q present = %v, want %v; profile:\n%s", want, got, tt.wantGPU, profile)
+				}
+			}
+
+			// The clipboard-only base classes must stay regardless of the GPU flag.
+			if !strings.Contains(profile, `(iokit-user-client-class "IOSurfaceSendRight")`) {
+				t.Fatalf("base profile must keep IOSurfaceSendRight; got:\n%s", profile)
+			}
+		})
+	}
+}
+
+func TestMacOS_GPUConfigWiring(t *testing.T) {
+	tests := []struct {
+		name    string
+		gpu     *bool
+		wantGpu bool
+	}{
+		{name: "unset gpu", gpu: nil, wantGpu: false},
+		{name: "gpu false", gpu: boolPtr(false), wantGpu: false},
+		{name: "gpu true", gpu: boolPtr(true), wantGpu: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{MacOS: config.MacOSConfig{Gpu: tt.gpu}}
+			params := buildMacOSParamsForTest(cfg)
+			if params.AllowGpu != tt.wantGpu {
+				t.Fatalf("params.AllowGpu = %v, want %v", params.AllowGpu, tt.wantGpu)
 			}
 		})
 	}
