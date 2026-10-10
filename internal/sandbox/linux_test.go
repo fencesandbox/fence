@@ -204,6 +204,65 @@ func TestExpandGlobPatterns_DoubleStarMatchesCurrentDirectory(t *testing.T) {
 	}
 }
 
+// Several "**/" patterns in one call share a single walk of cwd. The result
+// must be what each pattern finds on its own: symlinked directories are still
+// followed, "**/dir/**" still returns the directory, and nothing under a
+// "dir/**" directory is listed separately.
+func TestExpandGlobPatterns_SeveralDoubleStarPatternsInOneCall(t *testing.T) {
+	tmpDir := t.TempDir()
+	outside := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(tmpDir, "a", "b"),
+		filepath.Join(tmpDir, "node_modules", "pkg"),
+		filepath.Join(tmpDir, ".git", "hooks"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("failed to create %q: %v", dir, err)
+		}
+	}
+	for _, file := range []string{
+		filepath.Join(tmpDir, ".env"),
+		filepath.Join(tmpDir, "a", ".env"),
+		filepath.Join(tmpDir, "a", "b", "secret.key"),
+		filepath.Join(tmpDir, "node_modules", "pkg", ".env"),
+		filepath.Join(tmpDir, ".git", "hooks", "pre-commit"),
+		filepath.Join(outside, ".env"),
+	} {
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatalf("failed to create %q: %v", file, err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(tmpDir, "link")); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	got := ExpandGlobPatterns([]string{"**/.env", "**/*.key", "**/.git/hooks/**", "node_modules/**"})
+	want := []string{
+		filepath.Join(tmpDir, ".env"),
+		filepath.Join(tmpDir, "a", ".env"),
+		filepath.Join(tmpDir, "a", "b", "secret.key"),
+		filepath.Join(tmpDir, ".git", "hooks"),
+		filepath.Join(tmpDir, "node_modules"),
+		filepath.Join(tmpDir, "link", ".env"),
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("ExpandGlobPatterns returned %v, want %v", got, want)
+	}
+}
+
 func TestWrapCommandLinuxWithOptions_DropsShellFromRuntimeDenyMounts(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		t.Skip("bwrap not available")

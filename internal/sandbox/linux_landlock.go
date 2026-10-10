@@ -542,6 +542,7 @@ func ExpandGlobPatterns(patterns []string) []string {
 		}
 	}
 
+	var walkPatterns []string
 	for _, pattern := range patterns {
 		if !ContainsGlobChars(pattern) {
 			// Not a glob, use as-is
@@ -570,46 +571,16 @@ func ExpandGlobPatterns(patterns []string) []string {
 			continue
 		}
 
-		// Case 2: "**/pattern" or "**/dir/**" - scope to cwd only
-		// Skip directories already covered by dir/** patterns
+		// Case 2: "**/pattern" or "**/dir/**" - scope to cwd only.
+		// Collected here and matched in a single walk of cwd below.
 		if strings.HasPrefix(pattern, "**/") {
 			// Extract what we're looking for after the **/
 			suffix := strings.TrimPrefix(pattern, "**/")
 
 			// If it ends with /**, we're looking for directories
-			isDir := strings.HasSuffix(suffix, "/**")
-			if isDir {
-				suffix = strings.TrimSuffix(suffix, "/**")
-			}
+			suffix = strings.TrimSuffix(suffix, "/**")
 
-			// Walk cwd looking for matches, skipping covered directories
-			fsys := os.DirFS(cwd)
-			searchPattern := "**/" + suffix
-
-			err := doublestar.GlobWalk(fsys, searchPattern, func(path string, d fs.DirEntry) error {
-				// Skip directories that are already covered by dir/** patterns
-				// Check each parent directory of the current path
-				pathParts := strings.Split(path, string(filepath.Separator))
-				for i := 1; i <= len(pathParts); i++ {
-					parentPath := strings.Join(pathParts[:i], string(filepath.Separator))
-					if coveredDirs[parentPath] {
-						if d.IsDir() {
-							return fs.SkipDir
-						}
-						return nil // Skip this file, it's under a covered dir
-					}
-				}
-
-				absPath := filepath.Join(cwd, path)
-				if !seen[absPath] {
-					seen[absPath] = true
-					expanded = append(expanded, absPath)
-				}
-				return nil
-			})
-			if err != nil {
-				continue
-			}
+			walkPatterns = append(walkPatterns, "**/"+suffix)
 			continue
 		}
 
@@ -652,6 +623,35 @@ func ExpandGlobPatterns(patterns []string) []string {
 				}
 			}
 		}
+	}
+
+	// Walk cwd once for all "**/" patterns rather than once per pattern: in
+	// a large tree each walk costs seconds, and the default config alone has
+	// several such patterns. Directories covered by "dir/**" are skipped.
+	if len(walkPatterns) > 0 {
+		_ = doublestar.GlobWalk(os.DirFS(cwd), "**", func(path string, d fs.DirEntry) error {
+			pathParts := strings.Split(path, string(filepath.Separator))
+			for i := 1; i <= len(pathParts); i++ {
+				if coveredDirs[strings.Join(pathParts[:i], string(filepath.Separator))] {
+					if d.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
+				}
+			}
+
+			for _, pattern := range walkPatterns {
+				if doublestar.MatchUnvalidated(pattern, path) {
+					absPath := filepath.Join(cwd, path)
+					if !seen[absPath] {
+						seen[absPath] = true
+						expanded = append(expanded, absPath)
+					}
+					break
+				}
+			}
+			return nil
+		})
 	}
 
 	return expanded
